@@ -4,11 +4,13 @@
 package tn.eluea.kgpt.chatgpt;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -22,7 +24,7 @@ import java.nio.charset.StandardCharsets;
 
 public final class ChatGptPlanActivity extends Activity {
     private TextView status, models;
-    private Button login, discover, disconnect;
+    private Button login, manual, discover, disconnect;
     private ChatGptPlanAuth auth;
 
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -49,6 +51,12 @@ public final class ChatGptPlanActivity extends Activity {
         login = new Button(this);
         login.setText("Continue with ChatGPT");
         root.addView(login);
+
+        manual = new Button(this);
+        manual.setText("Вставити посилання з браузера");
+        manual.setVisibility(View.GONE);
+        root.addView(manual);
+
         discover = new Button(this);
         discover.setText("Show models available to my account");
         root.addView(discover);
@@ -70,15 +78,47 @@ public final class ChatGptPlanActivity extends Activity {
             login.setEnabled(false); discover.setEnabled(false); disconnect.setEnabled(false);
             return;
         }
+
         login.setOnClickListener(v -> {
             login.setEnabled(false);
-            status.setText("Complete sign-in in the system browser...");
+            manual.setVisibility(View.VISIBLE);
+            status.setText("Complete sign-in in the system browser...\n\nЯкщо браузер (наприклад, Brave) блокує перехід на 127.0.0.1 — скопіюйте адресу або код із рядка браузера та натисніть «Вставити посилання з браузера».");
             auth.signIn(this, (message, connected) -> {
                 login.setEnabled(true);
                 status.setText(message);
-                if (connected) refresh();
+                if (connected) {
+                    manual.setVisibility(View.GONE);
+                    refresh();
+                }
             });
         });
+
+        manual.setOnClickListener(v -> {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this);
+            builder.setTitle("Вставити посилання або код");
+            builder.setMessage("Якщо браузер заблокував редирект, скопіюйте адресу з рядка браузера (наприклад: http://127.0.0.1:.../auth/callback?code=...) або сам код і вставте сюди:");
+            final EditText input = new EditText(this);
+            input.setHint("http://127.0.0.1:.../auth/callback?code=...");
+            input.setSingleLine(false);
+            builder.setView(input);
+            builder.setPositiveButton("Підтвердити", (dialog, which) -> {
+                String text = input.getText() != null ? input.getText().toString().trim() : "";
+                if (!text.isEmpty()) {
+                    status.setText("Обробка коду авторизації...");
+                    auth.completeWithManualCallback(this, text, (message, connected) -> {
+                        status.setText(message);
+                        if (connected) {
+                            login.setEnabled(true);
+                            manual.setVisibility(View.GONE);
+                            refresh();
+                        }
+                    });
+                }
+            });
+            builder.setNegativeButton("Скасувати", null);
+            builder.show();
+        });
+
         discover.setOnClickListener(v -> loadModels());
         usage.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW,
                 Uri.parse("https://chatgpt.com"))));
@@ -88,6 +128,12 @@ public final class ChatGptPlanActivity extends Activity {
         });
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (auth != null) refresh();
+    }
+
     private void refresh() {
         try {
             boolean connected = auth.canUsePlan();
@@ -95,6 +141,7 @@ public final class ChatGptPlanActivity extends Activity {
                     ? "Connected: " + auth.connectedEmail()
                     : "Not connected. Connect and approve ChatGPT plan usage.");
             discover.setEnabled(connected);
+            if (connected && manual != null) manual.setVisibility(View.GONE);
         } catch (Exception e) {
             status.setText("Unable to read ChatGPT credentials");
             discover.setEnabled(false);
@@ -126,5 +173,4 @@ public final class ChatGptPlanActivity extends Activity {
             });
         }, "KGPT-ChatGPT-Models").start();
     }
-
 }

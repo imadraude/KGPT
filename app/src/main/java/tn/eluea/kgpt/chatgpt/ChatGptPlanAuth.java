@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
@@ -30,6 +31,7 @@ import javax.crypto.spec.GCMParameterSpec;
  * KGPT's own no-backup directory, NEVER sent to the hooked keyboard process.
  */
 public final class ChatGptPlanAuth {
+    private static final String TAG = "KGPT-Auth";
     private static final Object LOCK = new Object();
     private static final SecureRandom RNG = new SecureRandom();
     private static final String AUTHORIZE = "https://auth.openai.com/api/accounts/authorize";
@@ -41,7 +43,36 @@ public final class ChatGptPlanAuth {
     private static final String FILE = "chatgpt_plan_v1.bin";
     private final Context context;
 
+    private static volatile PendingSession pendingSession;
+
     public interface Result { void complete(String message, boolean connected); }
+
+    private static final class PendingSession {
+        final String client;
+        final String expectedSubject;
+        final String redirectUri;
+        final String state;
+        final String nonce;
+        final String verifier;
+        final ServerSocket server;
+
+        PendingSession(String client, String expectedSubject, String redirectUri,
+                       String state, String nonce, String verifier, ServerSocket server) {
+            this.client = client;
+            this.expectedSubject = expectedSubject;
+            this.redirectUri = redirectUri;
+            this.state = state;
+            this.nonce = nonce;
+            this.verifier = verifier;
+            this.server = server;
+        }
+
+        void close() {
+            if (server != null && !server.isClosed()) {
+                try { server.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
 
     public ChatGptPlanAuth(Context ctx) throws Exception {
         context = ctx.getApplicationContext();
@@ -75,10 +106,45 @@ public final class ChatGptPlanAuth {
                 activity.runOnUiThread(() -> result.complete(
                         connected ? "ChatGPT plan connected." : "Signed in, but plan usage was not approved.", connected));
             } catch (Exception e) {
+                Log.e(TAG, "Sign-in error", e);
                 activity.runOnUiThread(() -> result.complete(
                         "ChatGPT sign-in failed: " + safeMessage(e), false));
             }
         }, "KGPT-ChatGPT-OAuth").start();
+    }
+
+    public void completeWithManualCallback(Activity activity, String rawInput, Result result) {
+        new Thread(() -> {
+            try {
+                final PendingSession session;
+                synchronized (LOCK) { session = pendingSession; }
+                if (session == null) {
+                    throw new IllegalStateException("Немає активної сесії авторизації. Натисніть «Continue with ChatGPT» спочатку.");
+                }
+                String input = rawInput != null ? rawInput.trim() : "";
+                if (input.isEmpty()) {
+                    throw new IllegalArgumentException("Введіть посилання з браузера або код авторизації.");
+                }
+                Uri callbackUri;
+                if (input.startsWith("http://") || input.startsWith("https://")) {
+                    callbackUri = Uri.parse(input);
+                } else if (input.contains("code=")) {
+                    callbackUri = Uri.parse("http://127.0.0.1/auth/callback?" + input);
+                } else {
+                    callbackUri = Uri.parse("http://127.0.0.1/auth/callback?code="
+                            + URLEncoder.encode(input, "UTF-8") + "&state=" + session.state);
+                }
+                processCallback(callbackUri, session);
+                session.close();
+                boolean connected = canUsePlan();
+                activity.runOnUiThread(() -> result.complete(
+                        connected ? "ChatGPT plan connected." : "Signed in, but plan usage was not approved.", connected));
+            } catch (Exception e) {
+                Log.e(TAG, "Manual callback processing failed", e);
+                activity.runOnUiThread(() -> result.complete(
+                        "ChatGPT sign-in failed: " + safeMessage(e), false));
+            }
+        }, "KGPT-ChatGPT-ManualCallback").start();
     }
 
     private void authorize(Activity activity) throws Exception {
@@ -94,6 +160,14 @@ public final class ChatGptPlanAuth {
             String state = random(32), nonce = random(32), verifier = random(48);
             String challenge = b64(MessageDigest.getInstance("SHA-256")
                     .digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+
+            PendingSession currentSession = new PendingSession(
+                    client, expectedSubject, redirect, state, nonce, verifier, server);
+            synchronized (LOCK) {
+                if (pendingSession != null) pendingSession.close();
+                pendingSession = currentSession;
+            }
+
             Uri.Builder builder = Uri.parse(AUTHORIZE).buildUpon()
                     .appendQueryParameter("client_id", client)
                     .appendQueryParameter("ext_agent_host_id", hostId)
@@ -113,83 +187,123 @@ public final class ChatGptPlanAuth {
             Intent intent = new Intent(Intent.ACTION_VIEW, builder.build());
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
             activity.runOnUiThread(() -> activity.startActivity(intent));
+            Log.i(TAG, "OAuth sign-in listening on " + redirect);
             Uri callback = receiveCallback(server, state);
-            String error = callback.getQueryParameter("error");
-            if (error != null) throw new IllegalStateException("Authorization was declined");
-            String code = callback.getQueryParameter("code");
-            if (code == null || code.isEmpty()) throw new SecurityException("Authorization code missing");
-            String returned = callback.getQueryParameter("client_id");
-            final String issued;
-            if ("dynamic_agent_client".equals(client)) {
-                if (returned == null || !returned.startsWith("oaiapp_"))
-                    throw new SecurityException("No issued ChatGPT client ID");
+            processCallback(callback, currentSession);
+        }
+    }
+
+    private void processCallback(Uri callback, PendingSession session) throws Exception {
+        String error = callback.getQueryParameter("error");
+        if (error != null) {
+            String desc = callback.getQueryParameter("error_description");
+            throw new IllegalStateException("Authorization was declined: " + (desc != null ? desc : error));
+        }
+        String code = callback.getQueryParameter("code");
+        if (code == null || code.isEmpty()) throw new SecurityException("Authorization code missing");
+        String returned = callback.getQueryParameter("client_id");
+        final String issued;
+        if ("dynamic_agent_client".equals(session.client)) {
+            if (returned != null && returned.startsWith("oaiapp_")) {
                 issued = returned;
             } else {
-                if (returned != null && !client.equals(returned))
-                    throw new SecurityException("OAuth client mismatch");
-                issued = client;
+                issued = returned != null && !returned.isEmpty() ? returned : session.client;
             }
-            synchronized (LOCK) {
-                JSONObject saved = load();
+        } else {
+            if (returned != null && !session.client.equals(returned))
+                throw new SecurityException("OAuth client mismatch");
+            issued = session.client;
+        }
+        synchronized (LOCK) {
+            JSONObject saved = load();
+            if (saved != null) {
                 saved.put("client_id", issued); // preserve registration if code expired
                 save(saved);
             }
-            JSONObject tokens = postForm(TOKEN, "grant_type", "authorization_code",
-                    "client_id", issued, "code", code, "code_verifier", verifier,
-                    "redirect_uri", redirect, "resource", RESOURCE);
-            JSONObject claims = verifyIdentity(tokens.getString("id_token"), issued, nonce);
-            String subject = claims.getString("sub");
-            if (!expectedSubject.isEmpty() && !expectedSubject.equals(subject))
-                throw new SecurityException("Authenticated account is not the selected account");
-            synchronized (LOCK) {
-                JSONObject saved = load();
-                saved.put("client_id", issued);
-                saved.put("subject", subject);
-                saved.put("email", claims.optString("email", ""));
-                saved.put("id_token", tokens.getString("id_token"));
-                saved.put("access_token", tokens.getString("access_token"));
-                saved.put("refresh_token", tokens.getString("refresh_token"));
-                saved.put("scope", tokens.optString("scope", ""));
-                saved.put("expires_at", System.currentTimeMillis() + tokens.optLong("expires_in", 3600) * 1000L);
-                save(saved);
-            }
         }
+        JSONObject tokens = postForm(TOKEN, "grant_type", "authorization_code",
+                "client_id", issued, "code", code, "code_verifier", session.verifier,
+                "redirect_uri", session.redirectUri, "resource", RESOURCE);
+        String finalClientId = tokens.optString("client_id", issued);
+        JSONObject claims = verifyIdentity(tokens.getString("id_token"), finalClientId, session.nonce);
+        String subject = claims.getString("sub");
+        if (!session.expectedSubject.isEmpty() && !session.expectedSubject.equals(subject))
+            throw new SecurityException("Authenticated account is not the selected account");
+        String grantedScope = tokens.optString("scope", "");
+        if (grantedScope.isEmpty()) grantedScope = SCOPES;
+        synchronized (LOCK) {
+            JSONObject saved = load();
+            if (saved == null) saved = new JSONObject();
+            saved.put("client_id", finalClientId);
+            saved.put("subject", subject);
+            saved.put("email", claims.optString("email", ""));
+            saved.put("id_token", tokens.getString("id_token"));
+            saved.put("access_token", tokens.getString("access_token"));
+            saved.put("refresh_token", tokens.getString("refresh_token"));
+            saved.put("scope", grantedScope);
+            saved.put("expires_at", System.currentTimeMillis() + tokens.optLong("expires_in", 3600) * 1000L);
+            save(saved);
+        }
+        Log.i(TAG, "ChatGPT plan credentials successfully saved for " + claims.optString("email", ""));
     }
 
     /** Local browser HTTP callback as required by the OSS registration flow. */
     private static Uri receiveCallback(ServerSocket server, String state) throws Exception {
-        try (Socket socket = server.accept()) {
-            socket.setSoTimeout(10_000);
-            BufferedReader in = new BufferedReader(new InputStreamReader(
-                    socket.getInputStream(), StandardCharsets.US_ASCII));
-            String first = in.readLine();
-            if (first == null || !first.startsWith("GET ") || !first.contains(" HTTP/"))
-                throw new SecurityException("Invalid callback request");
-            String route = first.substring(4, first.indexOf(" HTTP/"));
-            Uri uri = Uri.parse("http://127.0.0.1" + route);
-            boolean hostMatches = false;
-            String line;
-            while ((line = in.readLine()) != null && !line.isEmpty()) {
-                if (line.toLowerCase(java.util.Locale.ROOT).startsWith("host:")) {
-                    hostMatches = line.substring(5).trim().equalsIgnoreCase(
-                            "127.0.0.1:" + server.getLocalPort());
-                }
+        while (!server.isClosed()) {
+            final Socket socket;
+            try {
+                socket = server.accept();
+            } catch (SocketException e) {
+                break;
             }
-            boolean valid = hostMatches && "/auth/callback".equals(uri.getPath())
-                    && state.equals(uri.getQueryParameter("state"));
-            byte[] body = (valid ? "Authorization received. Return to KGPT."
-                    : "Invalid authorization callback.").getBytes(StandardCharsets.UTF_8);
-            OutputStream out = socket.getOutputStream();
-            String headers = (valid ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 400 Bad Request\r\n")
-                    + "Content-Type: text/plain; charset=utf-8\r\n"
-                    + "Cache-Control: no-store\r\nContent-Length: " + body.length
-                    + "\r\nConnection: close\r\n\r\n";
-            out.write(headers.getBytes(StandardCharsets.US_ASCII));
-            out.write(body);
-            out.flush();
-            if (!valid) throw new SecurityException("OAuth callback state or host invalid");
-            return uri;
+            try (socket) {
+                socket.setSoTimeout(10_000);
+                BufferedReader in = new BufferedReader(new InputStreamReader(
+                        socket.getInputStream(), StandardCharsets.US_ASCII));
+                String first = in.readLine();
+                if (first == null || !first.startsWith("GET ") || !first.contains(" HTTP/")) {
+                    continue;
+                }
+                String route = first.substring(4, first.indexOf(" HTTP/"));
+                Uri uri = Uri.parse("http://127.0.0.1" + route);
+                boolean hostMatches = false;
+                String line;
+                int port = server.getLocalPort();
+                while ((line = in.readLine()) != null && !line.isEmpty()) {
+                    if (line.toLowerCase(java.util.Locale.ROOT).startsWith("host:")) {
+                        String hostVal = line.substring(5).trim().toLowerCase(java.util.Locale.ROOT);
+                        if (hostVal.equals("127.0.0.1:" + port) || hostVal.equals("localhost:" + port)
+                                || hostVal.equals("127.0.0.1") || hostVal.equals("localhost")) {
+                            hostMatches = true;
+                        }
+                    }
+                }
+                if (!"/auth/callback".equals(uri.getPath())) {
+                    byte[] notFound = "Not Found".getBytes(StandardCharsets.UTF_8);
+                    OutputStream out = socket.getOutputStream();
+                    String headers = "HTTP/1.1 404 Not Found\r\nContent-Length: " + notFound.length
+                            + "\r\nConnection: close\r\n\r\n";
+                    out.write(headers.getBytes(StandardCharsets.US_ASCII));
+                    out.write(notFound);
+                    out.flush();
+                    continue;
+                }
+                boolean valid = hostMatches && state.equals(uri.getQueryParameter("state"));
+                byte[] body = (valid ? "Authorization received. Return to KGPT."
+                        : "Invalid authorization callback.").getBytes(StandardCharsets.UTF_8);
+                OutputStream out = socket.getOutputStream();
+                String headers = (valid ? "HTTP/1.1 200 OK\r\n" : "HTTP/1.1 400 Bad Request\r\n")
+                        + "Content-Type: text/plain; charset=utf-8\r\n"
+                        + "Cache-Control: no-store\r\nContent-Length: " + body.length
+                        + "\r\nConnection: close\r\n\r\n";
+                out.write(headers.getBytes(StandardCharsets.US_ASCII));
+                out.write(body);
+                out.flush();
+                if (!valid) throw new SecurityException("OAuth callback state or host invalid");
+                return uri;
+            }
         }
+        throw new SecurityException("Callback server closed before receiving redirect");
     }
 
     public String validAccessToken() throws Exception {
@@ -226,8 +340,8 @@ public final class ChatGptPlanAuth {
     }
 
     private static String safeMessage(Exception e) {
-        if (e instanceof java.net.SocketTimeoutException) return "Browser sign-in timed out";
-        if (e instanceof SecurityException) return e.getMessage();
+        if (e instanceof java.net.SocketTimeoutException) return "Browser sign-in timed out (180s)";
+        if (e.getMessage() != null && !e.getMessage().isEmpty()) return e.getMessage();
         return e.getClass().getSimpleName();
     }
     private static boolean hasScope(String scope) {
@@ -260,7 +374,18 @@ public final class ChatGptPlanAuth {
         int code = con.getResponseCode();
         String raw = readLimited(code < 400 ? con.getInputStream() : con.getErrorStream(), 128000);
         con.disconnect();
-        if (code >= 400) throw new IllegalStateException("OAuth HTTP " + code);
+        if (code >= 400) {
+            String desc = "OAuth HTTP " + code;
+            try {
+                JSONObject errObj = new JSONObject(raw);
+                if (errObj.has("error_description")) {
+                    desc = errObj.getString("error_description");
+                } else if (errObj.has("error")) {
+                    desc = errObj.getString("error");
+                }
+            } catch (Exception ignored) {}
+            throw new IllegalStateException(desc);
+        }
         return new JSONObject(raw);
     }
 
