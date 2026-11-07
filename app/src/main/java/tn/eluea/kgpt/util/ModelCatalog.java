@@ -25,49 +25,53 @@ public final class ModelCatalog {
     public static final Map<LanguageModel, java.util.Set<String>> VALID = new HashMap<>();
 
         static {
-        // Gemini models - August 2026 latest (Free via Google AI Studio)
+        // Verified against official OpenAI and Google model docs (November 2026).
+        // Gemini: only text-capable generation endpoints, not live/image/TTS.
         PRESETS.put(LanguageModel.Gemini, new String[] {
+                "gemini-3.8-flash",
                 "gemini-3.7-flash",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash",
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-pro-preview",
                 "gemini-3.1-flash-lite",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro"
+                "gemini-3-flash-preview"
         });
         VALID.put(LanguageModel.Gemini, new java.util.HashSet<>(java.util.Arrays.asList(
-                "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite",
-                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite",
-                "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
-                "gemini-2.0-flash", "gemini-2.0-flash-lite")));
+                "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash",
+                "gemini-3.5-flash", "gemini-3.5-flash-lite",
+                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3-flash-preview",
+                "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite")));
 
-        // ChatGPT models - August 2026 latest (GPT-5.6 generation)
+        // OpenAI API keys use the API catalog, independent of ChatGPT subscription.
         PRESETS.put(LanguageModel.ChatGPT, new String[] {
+                "gpt-6.1-sol",
+                "gpt-6.1-terra",
+                "gpt-6-luna",
+                "gpt-6-astra",
+                "gpt-6-sol",
                 "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.6-cyber",
-                "gpt-5",
-                "gpt-oss-120b",
-                "gpt-oss-20b"
+                "gpt-5.6-terra"
         });
         VALID.put(LanguageModel.ChatGPT, new java.util.HashSet<>(java.util.Arrays.asList(
-                "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-cyber",
-                "gpt-5", "gpt-4o", "gpt-4o-mini",
-                "gpt-oss-120b", "gpt-oss-20b")));
+                "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol",
+                "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+                "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5")));
 
-        // Groq models - August 2026 latest (Free LPU inference)
+        // Plan model availability is account-specific; replace this fallback
+        // with GET /v1/models after the user signs in. Never hard-block slugs.
+        PRESETS.put(LanguageModel.ChatGPTPlan, new String[] {"gpt-6.1-sol"});
+        VALID.put(LanguageModel.ChatGPTPlan, null);
+
+                // Groq: remove the retired groq/compound model (September 2026).
         PRESETS.put(LanguageModel.Groq, new String[] {
                 "openai/gpt-oss-120b",
                 "openai/gpt-oss-20b",
-                "qwen/qwen3-vl-32b-instruct",
-                "minimaxai/minimax-m2.5",
-                "groq/compound"
+                "qwen/qwen3.8-27b"
         });
-        VALID.put(LanguageModel.Groq, null); // Allow any - Groq catalog changes frequently
+        VALID.put(LanguageModel.Groq, null); // provider catalog varies by account
 
-        // OpenRouter models - August 2026 (Free tier available)
+                // OpenRouter models - August 2026 (Free tier available)
         PRESETS.put(LanguageModel.OpenRouter, new String[] {
                 "openrouter/free",
                 "nvidia/nemotron-3-ultra:free",
@@ -78,33 +82,25 @@ public final class ModelCatalog {
         });
         VALID.put(LanguageModel.OpenRouter, null); // Allow any for OpenRouter
 
-        // Claude models - August 2026 latest (Claude 5 generation)
+        // Anthropic and Mistral official model catalogs (November 2026).
         PRESETS.put(LanguageModel.Claude, new String[] {
-                "claude-opus-5",
-                "claude-fable-5",
-                "claude-sonnet-5",
-                "claude-haiku-4-5-20251001"
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-opus-5-5",
+                "claude-fable-5-1",
+                "claude-sonnet-5"
         });
-        VALID.put(LanguageModel.Claude, new java.util.HashSet<>(java.util.Arrays.asList(
-                "claude-opus-5", "claude-fable-5", "claude-sonnet-5",
-                "claude-haiku-4-5-20251001", "claude-haiku-4-5",
-                "claude-sonnet-4-20250514", "claude-opus-4-5-20250630",
-                "claude-sonnet-4-5-20250630")));
+        VALID.put(LanguageModel.Claude, null); // allow newly released model aliases
 
-        // Mistral models - August 2026 latest
         PRESETS.put(LanguageModel.Mistral, new String[] {
-                "mistral-large-latest",
-                "mistral-medium-3.5",
+                "mistral-small-2603",
+                "mistral-large-4",
                 "mistral-small-latest",
-                "codestral-latest",
-                "ministral-3-latest"
+                "codestral-latest"
         });
-        VALID.put(LanguageModel.Mistral, new java.util.HashSet<>(java.util.Arrays.asList(
-                "mistral-large-latest", "mistral-medium-3.5", "mistral-small-latest",
-                "codestral-latest", "ministral-3-latest",
-                "mistral-small-2506", "codestral-2501")));
+        VALID.put(LanguageModel.Mistral, null);
 
-        // Chutes models - August 2026 latest
+                // Chutes models - August 2026 latest
         PRESETS.put(LanguageModel.Chutes, new String[] {
                 "deepseek-ai/DeepSeek-V3.2",
                 "deepseek-ai/DeepSeek-V4-Flash-0731",
@@ -152,20 +148,15 @@ public final class ModelCatalog {
                 "grok-4.6", "grok-4.5", "grok-4.3", "grok-4", "grok-3",
                 "grok-2-latest", "grok-2", "grok-2-vision-1212", "grok-beta")));
 
-        // DeepSeek models - August 2026 latest
+        // DeepSeek legacy deepseek-chat/reasoner have been discontinued.
         PRESETS.put(LanguageModel.DeepSeek, new String[] {
-                "deepseek-chat",
-                "deepseek-reasoner",
-                "deepseek-v4-pro",
-                "deepseek-v4-flash",
-                "deepseek-coder"
+                "deepseek-flash",
+                "deepseek-v4-pro"
         });
         VALID.put(LanguageModel.DeepSeek, new java.util.HashSet<>(java.util.Arrays.asList(
-                "deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro",
-                "deepseek-v4-flash", "deepseek-coder",
-                "deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1")));
+                "deepseek-flash", "deepseek-v4-pro")));
 
-        // Kimi (Moonshot AI) models - August 2026 latest
+                // Kimi (Moonshot AI) models - August 2026 latest
         PRESETS.put(LanguageModel.Kimi, new String[] {
                 "kimi-k3",
                 "kimi-k2.6",
