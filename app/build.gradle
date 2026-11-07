@@ -31,8 +31,10 @@ android {
         applicationId = "tn.eluea.kgpt"
         minSdk = 26
         targetSdk = 36
-        versionCode = 415
-        versionName = "4.1.5"
+        // Build-time overrides for signed Obtainium releases.
+        // Defaults are unchanged for local/development builds.
+        versionCode = (System.getenv("KGPT_VERSION_CODE") ?: "415").toInteger()
+        versionName = System.getenv("KGPT_VERSION_NAME") ?: "4.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
