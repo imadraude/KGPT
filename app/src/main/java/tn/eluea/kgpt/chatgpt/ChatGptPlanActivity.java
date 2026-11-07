@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets;
 
 public final class ChatGptPlanActivity extends Activity {
     private TextView status, models;
-    private Button login, manual, discover, disconnect;
+    private Button login, manual, cancelLogin, discover, disconnect;
     private ChatGptPlanAuth auth;
 
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -56,6 +56,10 @@ public final class ChatGptPlanActivity extends Activity {
         manual.setText("Вставити посилання з браузера");
         manual.setVisibility(View.GONE);
         root.addView(manual);
+        cancelLogin = new Button(this);
+        cancelLogin.setText("Скасувати поточний вхід");
+        cancelLogin.setVisibility(View.GONE);
+        root.addView(cancelLogin);
 
         discover = new Button(this);
         discover.setText("Show models available to my account");
@@ -82,10 +86,12 @@ public final class ChatGptPlanActivity extends Activity {
         login.setOnClickListener(v -> {
             login.setEnabled(false);
             manual.setVisibility(View.VISIBLE);
+            cancelLogin.setVisibility(View.VISIBLE);
             status.setText("Виконайте вхід у системному браузері.\n\nЯкщо браузер заблокує повернення на 127.0.0.1, вставте повне посилання з адресного рядка сюди. Під час першого входу потрібне саме повне посилання з code, state і client_id.");
             auth.signIn(this, (message, connected) -> {
                 status.setText(message);
                 login.setEnabled(!auth.isSignInPending());
+                cancelLogin.setVisibility(auth.isSignInPending() ? View.VISIBLE : View.GONE);
                 if (connected) {
                     manual.setVisibility(View.GONE);
                     refresh();
@@ -110,6 +116,7 @@ public final class ChatGptPlanActivity extends Activity {
                     auth.completeWithManualCallback(this, text, (message, connected) -> {
                         status.setText(message);
                         login.setEnabled(!auth.isSignInPending());
+                        cancelLogin.setVisibility(auth.isSignInPending() ? View.VISIBLE : View.GONE);
                         if (connected) {
                             manual.setVisibility(View.GONE);
                             refresh();
@@ -123,6 +130,10 @@ public final class ChatGptPlanActivity extends Activity {
             builder.show();
         });
 
+        cancelLogin.setOnClickListener(v -> {
+            auth.cancelSignIn();
+            refresh();
+        });
         discover.setOnClickListener(v -> loadModels());
         usage.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_VIEW,
                 Uri.parse("https://chatgpt.com"))));
@@ -143,8 +154,11 @@ public final class ChatGptPlanActivity extends Activity {
             boolean pending = auth.isSignInPending();
             boolean connected = auth.canUsePlan();
             login.setEnabled(!pending);
+            cancelLogin.setVisibility(pending ? View.VISIBLE : View.GONE);
             if (pending) {
-                status.setText("Очікування завершення авторизації у браузері…");
+                status.setText(auth.requiresManualRecovery()
+                        ? "Android перезапустив KGPT під час входу. Вставте повне посилання з браузера або скасуйте вхід."
+                        : "Очікування завершення авторизації у браузері…");
                 manual.setVisibility(View.VISIBLE);
             } else {
                 status.setText(connected
