@@ -81,6 +81,46 @@ public class ModelsFragment extends Fragment implements ModelsAdapter.OnModelSel
     private static final Map<LanguageModel, String[]> SUB_MODEL_PRESETS = tn.eluea.kgpt.util.ModelCatalog.PRESETS;
     private static final Map<LanguageModel, java.util.Set<String>> VALID_MODELS = tn.eluea.kgpt.util.ModelCatalog.VALID;
 
+    // Account-scoped ChatGPT models are fetched live. Never store OAuth tokens here.
+    private final java.util.LinkedHashMap<String, String> planModels =
+            new java.util.LinkedHashMap<>();
+    private boolean planModelsLoading = false;
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (selectedModel == LanguageModel.ChatGPTPlan) refreshPlanModels();
+    }
+
+    private void refreshPlanModels() {
+        if (planModelsLoading || !isAdded()) return;
+        android.app.Activity host = getActivity();
+        if (host == null) return;
+        planModelsLoading = true;
+        new Thread(() -> {
+            java.util.LinkedHashMap<String, String> current = new java.util.LinkedHashMap<>();
+            try {
+                tn.eluea.kgpt.chatgpt.ChatGptPlanAuth auth =
+                        new tn.eluea.kgpt.chatgpt.ChatGptPlanAuth(host);
+                if (auth.canUsePlan()) {
+                    current = tn.eluea.kgpt.chatgpt.ChatGptPlanModels.fetch(auth);
+                }
+            } catch (Exception ignored) {
+                // Leave a usable manual model field and a known fallback.
+            }
+            java.util.LinkedHashMap<String, String> resolved = current;
+            host.runOnUiThread(() -> {
+                planModelsLoading = false;
+                if (!isAdded()) return;
+                planModels.clear();
+                planModels.putAll(resolved);
+                if (selectedModel == LanguageModel.ChatGPTPlan && rootView != null) {
+                    setupSubModelChips(LanguageModel.ChatGPTPlan);
+                }
+            });
+        }, "KGPT-Plan-ModelCatalog").start();
+    }
+
     private boolean isValidModelName(LanguageModel model, String modelName) {
         if (modelName == null || modelName.trim().isEmpty()) {
             return false;
@@ -205,7 +245,9 @@ public class ModelsFragment extends Fragment implements ModelsAdapter.OnModelSel
     private void setupSubModelChips(LanguageModel model) {
         chipGroupSubmodels.removeAllViews();
 
-        String[] presets = SUB_MODEL_PRESETS.get(model);
+        String[] presets = model == LanguageModel.ChatGPTPlan && !planModels.isEmpty()
+                ? planModels.keySet().toArray(new String[0])
+                : SUB_MODEL_PRESETS.get(model);
         if (presets == null)
             return;
 
@@ -248,7 +290,9 @@ public class ModelsFragment extends Fragment implements ModelsAdapter.OnModelSel
 
         for (String preset : presets) {
             Chip chip = new Chip(requireContext());
-            chip.setText(preset);
+            String accountLabel = model == LanguageModel.ChatGPTPlan ? planModels.get(preset) : null;
+            chip.setText(accountLabel != null && !accountLabel.equals(preset)
+                    ? accountLabel + " (" + preset + ")" : preset);
             chip.setCheckable(true);
             chip.setChipBackgroundColor(bgStateList);
             chip.setTextColor(textStateList);
