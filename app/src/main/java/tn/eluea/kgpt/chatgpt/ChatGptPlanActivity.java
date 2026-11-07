@@ -104,11 +104,26 @@ public final class ChatGptPlanActivity extends Activity {
         manual.setOnClickListener(v -> {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("Вставити посилання або код");
-            builder.setMessage("Якщо браузер заблокував повернення, вставте всю адресу (http://127.0.0.1:.../auth/callback?code=...&state=...&client_id=...). Лише для повторного входу з уже зареєстрованим клієнтом можна вставити код окремо.");
+            builder.setMessage("Вставте повну адресу з браузера. Для першого входу вона має містити code, state та client_id.");
             final EditText input = new EditText(this);
             input.setHint("http://127.0.0.1:.../auth/callback?code=...");
+            // A callback can be several kilobytes long. Never let EditText grow
+            // to the height of the entire screen and hide the dialog actions.
+            float density = getResources().getDisplayMetrics().density;
             input.setSingleLine(false);
-            builder.setView(input);
+            input.setMinLines(2);
+            input.setMaxLines(4);
+            input.setMaxHeight((int) (120 * density));
+            input.setVerticalScrollBarEnabled(true);
+            input.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            LinearLayout inputContainer = new LinearLayout(this);
+            inputContainer.setOrientation(LinearLayout.VERTICAL);
+            int horizontalPadding = (int) (24 * density);
+            inputContainer.setPadding(horizontalPadding, 0, horizontalPadding, 0);
+            inputContainer.addView(input, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            builder.setView(inputContainer);
             builder.setPositiveButton("Підтвердити", (dialog, which) -> {
                 String text = input.getText() != null ? input.getText().toString().trim() : "";
                 if (!text.isEmpty()) {
@@ -127,7 +142,16 @@ public final class ChatGptPlanActivity extends Activity {
                 }
             });
             builder.setNegativeButton("Скасувати", null);
-            builder.show();
+            AlertDialog dialog = builder.create();
+            // Keep action buttons visible when the soft keyboard is shown.
+            dialog.setOnShowListener(ignored -> {
+                if (dialog.getWindow() != null) {
+                    dialog.getWindow().setSoftInputMode(
+                            android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+                                    | android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+                }
+            });
+            dialog.show();
         });
 
         cancelLogin.setOnClickListener(v -> {
