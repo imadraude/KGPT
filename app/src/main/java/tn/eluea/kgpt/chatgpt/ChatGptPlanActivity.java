@@ -82,13 +82,15 @@ public final class ChatGptPlanActivity extends Activity {
         login.setOnClickListener(v -> {
             login.setEnabled(false);
             manual.setVisibility(View.VISIBLE);
-            status.setText("Complete sign-in in the system browser...\n\nЯкщо браузер (наприклад, Brave) блокує перехід на 127.0.0.1 — скопіюйте адресу або код із рядка браузера та натисніть «Вставити посилання з браузера».");
+            status.setText("Виконайте вхід у системному браузері.\n\nЯкщо браузер заблокує повернення на 127.0.0.1, вставте повне посилання з адресного рядка сюди. Можна також вставити тільки код.");
             auth.signIn(this, (message, connected) -> {
-                login.setEnabled(true);
                 status.setText(message);
+                login.setEnabled(!auth.isSignInPending());
                 if (connected) {
                     manual.setVisibility(View.GONE);
                     refresh();
+                } else if (!auth.isSignInPending()) {
+                    manual.setVisibility(View.GONE);
                 }
             });
         });
@@ -107,10 +109,12 @@ public final class ChatGptPlanActivity extends Activity {
                     status.setText("Обробка коду авторизації...");
                     auth.completeWithManualCallback(this, text, (message, connected) -> {
                         status.setText(message);
+                        login.setEnabled(!auth.isSignInPending());
                         if (connected) {
-                            login.setEnabled(true);
                             manual.setVisibility(View.GONE);
                             refresh();
+                        } else if (!auth.isSignInPending()) {
+                            manual.setVisibility(View.GONE);
                         }
                     });
                 }
@@ -136,14 +140,22 @@ public final class ChatGptPlanActivity extends Activity {
 
     private void refresh() {
         try {
+            boolean pending = auth.isSignInPending();
             boolean connected = auth.canUsePlan();
-            status.setText(connected
-                    ? "Connected: " + auth.connectedEmail()
-                    : "Not connected. Connect and approve ChatGPT plan usage.");
+            login.setEnabled(!pending);
+            if (pending) {
+                status.setText("Очікування завершення авторизації у браузері…");
+                manual.setVisibility(View.VISIBLE);
+            } else {
+                status.setText(connected
+                        ? "Підключено: " + auth.connectedEmail()
+                        : "Не підключено. Увійдіть і дозвольте використання підписки.");
+                manual.setVisibility(View.GONE);
+            }
             discover.setEnabled(connected);
-            if (connected && manual != null) manual.setVisibility(View.GONE);
         } catch (Exception e) {
-            status.setText("Unable to read ChatGPT credentials");
+            status.setText("Не вдалося прочитати дані авторизації.");
+            login.setEnabled(false);
             discover.setEnabled(false);
         }
     }
