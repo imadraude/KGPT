@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -55,6 +56,8 @@ public final class ChatGptPlanAuth {
         final String nonce;
         final String verifier;
         final ServerSocket server;
+        final AtomicBoolean processing = new AtomicBoolean(false);
+        final AtomicBoolean reported = new AtomicBoolean(false);
 
         PendingSession(String client, String expectedSubject, String redirectUri,
                        String state, String nonce, String verifier, ServerSocket server) {
@@ -98,76 +101,106 @@ public final class ChatGptPlanAuth {
         }
     }
 
+    public boolean isSignInPending() {
+        synchronized (LOCK) { return pendingSession != null; }
+    }
+
     public void signIn(Activity activity, Result result) {
         new Thread(() -> {
             try {
-                authorize(activity);
-                boolean connected = canUsePlan();
-                activity.runOnUiThread(() -> result.complete(
-                        connected ? "ChatGPT plan connected." : "Signed in, but plan usage was not approved.", connected));
+                authorize(activity, result);
             } catch (Exception e) {
-                Log.e(TAG, "Sign-in error", e);
-                activity.runOnUiThread(() -> result.complete(
-                        "ChatGPT sign-in failed: " + safeMessage(e), false));
+                // Only startup errors reach here; active attempts report their own result.
+                report(activity, result, "ChatGPT sign-in failed: " + safeMessage(e), false);
             }
         }, "KGPT-ChatGPT-OAuth").start();
     }
 
     public void completeWithManualCallback(Activity activity, String rawInput, Result result) {
         new Thread(() -> {
+            final PendingSession session;
+            synchronized (LOCK) { session = pendingSession; }
+            if (session == null) {
+                report(activity, result, "Немає активної сесії. Розпочніть вхід повторно.", false);
+                return;
+            }
+            if (session.processing.get()) {
+                report(activity, result, "Код авторизації вже обробляється.", false);
+                return;
+            }
             try {
-                final PendingSession session;
-                synchronized (LOCK) { session = pendingSession; }
-                if (session == null) {
-                    throw new IllegalStateException("Немає активної сесії авторизації. Натисніть «Continue with ChatGPT» спочатку.");
-                }
                 String input = rawInput != null ? rawInput.trim() : "";
-                if (input.isEmpty()) {
-                    throw new IllegalArgumentException("Введіть посилання з браузера або код авторизації.");
-                }
-                Uri callbackUri;
+                if (input.isEmpty()) throw new IllegalArgumentException("Вставте посилання або код авторизації.");
+                Uri callback;
                 if (input.startsWith("http://") || input.startsWith("https://")) {
-                    callbackUri = Uri.parse(input);
-                } else if (input.contains("code=")) {
-                    callbackUri = Uri.parse("http://127.0.0.1/auth/callback?" + input);
+                    callback = Uri.parse(input);
+                } else if (input.startsWith("?") || input.startsWith("code=") || input.startsWith("error=")) {
+                    callback = Uri.parse(session.redirectUri + (input.startsWith("?") ? "" : "?") + input);
                 } else {
-                    callbackUri = Uri.parse("http://127.0.0.1/auth/callback?code="
+                    callback = Uri.parse(session.redirectUri + "?code="
                             + URLEncoder.encode(input, "UTF-8") + "&state=" + session.state);
                 }
-                processCallback(callbackUri, session);
-                session.close();
-                boolean connected = canUsePlan();
-                activity.runOnUiThread(() -> result.complete(
-                        connected ? "ChatGPT plan connected." : "Signed in, but plan usage was not approved.", connected));
+                // Full callback URLs/query strings MUST carry their original state.
+                // A pasted code alone is protected by the pending PKCE verifier.
+                completeAuthorization(session, callback, activity, result);
             } catch (Exception e) {
-                Log.e(TAG, "Manual callback processing failed", e);
-                activity.runOnUiThread(() -> result.complete(
-                        "ChatGPT sign-in failed: " + safeMessage(e), false));
+                report(activity, result, "Не вдалося розпізнати код: " + safeMessage(e), false);
             }
         }, "KGPT-ChatGPT-ManualCallback").start();
     }
 
-    private void authorize(Activity activity) throws Exception {
+    private static void report(Activity activity, Result result, String message, boolean connected) {
+        activity.runOnUiThread(() -> result.complete(message, connected));
+    }
+
+    private static void reportOnce(PendingSession session, Activity activity, Result result,
+                                   String message, boolean connected) {
+        if (session.reported.compareAndSet(false, true)) report(activity, result, message, connected);
+    }
+
+    /** Exactly one of the browser listener or manual callback can exchange a code. */
+    private void completeAuthorization(PendingSession session, Uri callback,
+                                       Activity activity, Result result) {
+        if (!session.processing.compareAndSet(false, true)) return;
+        session.close(); // Unblock the browser listener when manual recovery succeeds.
+        try {
+            processCallback(callback, session);
+            boolean connected = canUsePlan();
+            reportOnce(session, activity, result,
+                    connected ? "ChatGPT підключено." :
+                            "Вхід виконано, але дозвіл на використання підписки не надано.",
+                    connected);
+        } catch (Exception e) {
+            Log.w(TAG, "OAuth authorization did not complete (" + e.getClass().getSimpleName() + ")");
+            reportOnce(session, activity, result, "Помилка входу: " + safeMessage(e), false);
+        } finally {
+            synchronized (LOCK) {
+                if (pendingSession == session) pendingSession = null;
+            }
+        }
+    }
+
+    private void authorize(Activity activity, Result result) throws Exception {
         final JSONObject previous;
         synchronized (LOCK) { previous = load(); }
-        if (previous == null) throw new IllegalStateException("Local credential store unavailable");
+        if (previous == null) throw new IllegalStateException("Сховище облікового запису недоступне.");
         final String client = previous.optString("client_id", "dynamic_agent_client");
         final String expectedSubject = previous.optString("subject", "");
         final String hostId = previous.getString("host_id");
-        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
-            server.setSoTimeout(180_000);
-            String redirect = "http://127.0.0.1:" + server.getLocalPort() + "/auth/callback";
-            String state = random(32), nonce = random(32), verifier = random(48);
-            String challenge = b64(MessageDigest.getInstance("SHA-256")
-                    .digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        ServerSocket server = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        server.setSoTimeout(600_000);
+        String redirect = "http://127.0.0.1:" + server.getLocalPort() + "/auth/callback";
+        String state = random(32), nonce = random(32), verifier = random(48);
+        String challenge = b64(MessageDigest.getInstance("SHA-256")
+                .digest(verifier.getBytes(StandardCharsets.US_ASCII)));
+        PendingSession session = new PendingSession(
+                client, expectedSubject, redirect, state, nonce, verifier, server);
+        synchronized (LOCK) {
+            if (pendingSession != null) pendingSession.close();
+            pendingSession = session;
+        }
 
-            PendingSession currentSession = new PendingSession(
-                    client, expectedSubject, redirect, state, nonce, verifier, server);
-            synchronized (LOCK) {
-                if (pendingSession != null) pendingSession.close();
-                pendingSession = currentSession;
-            }
-
+        try {
             Uri.Builder builder = Uri.parse(AUTHORIZE).buildUpon()
                     .appendQueryParameter("client_id", client)
                     .appendQueryParameter("ext_agent_host_id", hostId)
@@ -186,14 +219,44 @@ public final class ChatGptPlanAuth {
             }
             Intent intent = new Intent(Intent.ACTION_VIEW, builder.build());
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
-            activity.runOnUiThread(() -> activity.startActivity(intent));
-            Log.i(TAG, "OAuth sign-in listening on " + redirect);
+            activity.runOnUiThread(() -> {
+                try {
+                    activity.startActivity(intent);
+                } catch (Exception e) {
+                    reportOnce(session, activity, result,
+                            "Не вдалося відкрити браузер для авторизації.", false);
+                    session.close();
+                }
+            });
             Uri callback = receiveCallback(server, state);
-            processCallback(callback, currentSession);
+            completeAuthorization(session, callback, activity, result);
+        } catch (Exception e) {
+            // Manual recovery owns the outcome once it begins exchanging a code.
+            if (!session.processing.get()) {
+                reportOnce(session, activity, result,
+                        e instanceof java.net.SocketTimeoutException
+                                ? "Час входу минув. Розпочніть авторизацію повторно."
+                                : "Помилка авторизації: " + safeMessage(e), false);
+            }
+        } finally {
+            session.close();
+            synchronized (LOCK) {
+                if (pendingSession == session && !session.processing.get()) pendingSession = null;
+            }
         }
     }
 
     private void processCallback(Uri callback, PendingSession session) throws Exception {
+        Uri expected = Uri.parse(session.redirectUri);
+        if (!"http".equals(callback.getScheme()) ||
+                !"127.0.0.1".equals(callback.getHost()) ||
+                callback.getPort() != expected.getPort() ||
+                !"/auth/callback".equals(callback.getPath())) {
+            throw new SecurityException("Посилання авторизації не відповідає поточній сесії.");
+        }
+        if (!session.state.equals(callback.getQueryParameter("state"))) {
+            throw new SecurityException("Недійсний стан авторизації. Розпочніть вхід повторно.");
+        }
         String error = callback.getQueryParameter("error");
         if (error != null) {
             String desc = callback.getQueryParameter("error_description");
@@ -204,33 +267,40 @@ public final class ChatGptPlanAuth {
         String returned = callback.getQueryParameter("client_id");
         final String issued;
         if ("dynamic_agent_client".equals(session.client)) {
-            if (returned != null && returned.startsWith("oaiapp_")) {
-                issued = returned;
-            } else {
-                issued = returned != null && !returned.isEmpty() ? returned : session.client;
+            if (returned == null || !returned.matches("oaiapp_[a-zA-Z0-9_-]+")) {
+                throw new SecurityException("OpenAI не повернув ідентифікатор застосунку. Спробуйте ще раз.");
             }
+            issued = returned;
         } else {
             if (returned != null && !session.client.equals(returned))
                 throw new SecurityException("OAuth client mismatch");
             issued = session.client;
         }
-        synchronized (LOCK) {
-            JSONObject saved = load();
-            if (saved != null) {
-                saved.put("client_id", issued); // preserve registration if code expired
-                save(saved);
+        // For a new registration retain its issued client ID even if a code later
+        // expires. Never replace an existing account's client before validating it.
+        if ("dynamic_agent_client".equals(session.client)) {
+            synchronized (LOCK) {
+                JSONObject saved = load();
+                if (saved != null && !saved.has("access_token")) {
+                    saved.put("client_id", issued);
+                    save(saved);
+                }
             }
         }
         JSONObject tokens = postForm(TOKEN, "grant_type", "authorization_code",
                 "client_id", issued, "code", code, "code_verifier", session.verifier,
                 "redirect_uri", session.redirectUri, "resource", RESOURCE);
         String finalClientId = tokens.optString("client_id", issued);
+        if (!issued.equals(finalClientId)) throw new SecurityException("OAuth token client mismatch");
+        if (!"Bearer".equalsIgnoreCase(tokens.optString("token_type", "Bearer"))) {
+            throw new SecurityException("Unexpected OAuth token type");
+        }
         JSONObject claims = verifyIdentity(tokens.getString("id_token"), finalClientId, session.nonce);
         String subject = claims.getString("sub");
         if (!session.expectedSubject.isEmpty() && !session.expectedSubject.equals(subject))
             throw new SecurityException("Authenticated account is not the selected account");
+        // Never infer permissions from the scopes we requested.
         String grantedScope = tokens.optString("scope", "");
-        if (grantedScope.isEmpty()) grantedScope = SCOPES;
         synchronized (LOCK) {
             JSONObject saved = load();
             if (saved == null) saved = new JSONObject();
@@ -239,7 +309,7 @@ public final class ChatGptPlanAuth {
             saved.put("email", claims.optString("email", ""));
             saved.put("id_token", tokens.getString("id_token"));
             saved.put("access_token", tokens.getString("access_token"));
-            saved.put("refresh_token", tokens.getString("refresh_token"));
+            saved.put("refresh_token", tokens.optString("refresh_token", ""));
             saved.put("scope", grantedScope);
             saved.put("expires_at", System.currentTimeMillis() + tokens.optLong("expires_in", 3600) * 1000L);
             save(saved);
@@ -299,7 +369,7 @@ public final class ChatGptPlanAuth {
                 out.write(headers.getBytes(StandardCharsets.US_ASCII));
                 out.write(body);
                 out.flush();
-                if (!valid) throw new SecurityException("OAuth callback state or host invalid");
+                if (!valid) continue; // Ignore unrelated loopback traffic; keep listener alive.
                 return uri;
             }
         }
@@ -314,6 +384,8 @@ public final class ChatGptPlanAuth {
                 throw new SecurityException("Connect ChatGPT and approve plan access in KGPT");
             if (System.currentTimeMillis() + 120000L < saved.optLong("expires_at"))
                 return saved.getString("access_token");
+            if (saved.optString("refresh_token", "").isEmpty())
+                throw new SecurityException("ChatGPT session expired; sign in again.");
             JSONObject tokens = postForm(TOKEN, "grant_type", "refresh_token",
                     "client_id", saved.getString("client_id"),
                     "refresh_token", saved.getString("refresh_token"), "resource", RESOURCE);
@@ -331,12 +403,20 @@ public final class ChatGptPlanAuth {
 
     public void disconnectLocally() throws Exception {
         synchronized (LOCK) {
+            if (pendingSession != null) {
+                pendingSession.close();
+                pendingSession = null;
+            }
             JSONObject saved = load();
+            if (saved == null) return;
             JSONObject cleared = new JSONObject().put("host_id", saved.getString("host_id"));
-            if (saved.has("client_id")) cleared.put("client_id", saved.getString("client_id"));
+            // Preserve only account registration metadata for later re-authorization.
+            for (String key : new String[]{"client_id", "subject", "email"}) {
+                if (saved.has(key)) cleared.put(key, saved.getString(key));
+            }
             save(cleared);
         }
-        // Revocation is managed separately in ChatGPT account settings.
+        // User can revoke access remotely in ChatGPT settings.
     }
 
     private static String safeMessage(Exception e) {
