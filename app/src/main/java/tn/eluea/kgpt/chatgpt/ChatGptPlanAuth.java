@@ -380,10 +380,15 @@ public final class ChatGptPlanAuth {
                     continue;
                 }
                 String route = first.substring(4, first.indexOf(" HTTP/"));
-                Uri uri = Uri.parse("http://127.0.0.1" + route);
+                int port = server.getLocalPort();
+                Uri uri;
+                try {
+                    uri = Uri.parse(ChatGptPlanSecurity.reconstructLoopbackCallback(port, route));
+                } catch (SecurityException malformed) {
+                    continue; // Reject absolute-form or malformed HTTP request-targets.
+                }
                 boolean hostMatches = false;
                 String line;
-                int port = server.getLocalPort();
                 while ((line = in.readLine()) != null && !line.isEmpty()) {
                     if (line.toLowerCase(java.util.Locale.ROOT).startsWith("host:")) {
                         String hostVal = line.substring(5).trim().toLowerCase(java.util.Locale.ROOT);
