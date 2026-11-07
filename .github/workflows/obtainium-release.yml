@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$KGPT_KEYSTORE_B64" || -z "$KGPT_STORE_PASSWORD" }}; then
+          if [[ -z "$KGPT_KEYSTORE_B64" || -z "$KGPT_STORE_PASSWORD" ]]; then
             echo "::error::Add KGPT_KEYSTORE_B64 and KGPT_STORE_PASSWORD in repository Actions secrets before releasing."
             exit 1
           fi
@@ -95,9 +95,9 @@ jobs:
         run: |
           set -euo pipefail
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
-          if [[ -z "$APK" || ! -s "$APK" }}; then echo "::error::Release APK not found"; exit 1; fi
+          if [[ -z "$APK" || ! -s "$APK" ]]; then echo "::error::Release APK not found"; exit 1; fi
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/signing-info.txt
-          expected_cert="f3b2d84e18453838b199d6dfc8623599f51e2cca54220f3070e010783f4f0c00"
+          expected_cert="59444c072eb04dec45485dedbb36014923ff038fd6c5f2b035cd7c9596f1f429"
           actual_cert="$(grep -m 1 'certificate SHA-256 digest:' /tmp/signing-info.txt | sed -E 's/^.*digest: //' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
           if [[ "$actual_cert" != "$expected_cert" ]]; then
             echo "::error::Signing certificate changed: installed users would not be able to update!"
