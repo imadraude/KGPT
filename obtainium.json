@@ -1,0 +1,12 @@
+{
+  "apps": [
+    {
+      "id": "tn.eluea.kgpt",
+      "url": "https://github.com/imadraude/KGPT",
+      "author": "imadraude",
+      "name": "KGPT (ChatGPT Plus)",
+      "additionalSettings": "{\"includePrereleases\":true,\"verifyLatestTag\":false,\"apkFilterRegEx\":\"^KGPT-release-v.*\\\\.apk$\",\"versionDetection\":true}"
+    }
+  ],
+  "settings": null
+}
