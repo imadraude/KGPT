@@ -200,26 +200,36 @@ public final class ChatGptPlanActivity extends Activity {
 
     private void loadModels() {
         discover.setEnabled(false);
-        models.setText("Loading models available to your ChatGPT account...");
+        models.setText("Отримання моделей, доступних цьому обліковому запису…");
         new Thread(() -> {
             String result;
             try {
                 java.util.LinkedHashMap<String, String> available =
                         ChatGptPlanModels.fetch(auth);
-                StringBuilder list = new StringBuilder("Available models (select in KGPT > Models):\n");
+                StringBuilder list = new StringBuilder(
+                        "Доступні моделі (вибір: KGPT → Models):\n");
                 for (java.util.Map.Entry<String, String> m : available.entrySet()) {
                     if (list.length() > 5000) break;
                     list.append(m.getValue()).append(" — ")
                             .append(m.getKey()).append('\n');
                 }
                 result = list.toString();
+            } catch (ChatGptPlanModels.CatalogException e) {
+                // Purposefully expose only categorized failure information,
+                // never bearer tokens, OAuth responses or raw server bodies.
+                result = "Не вдалося отримати моделі:\n" + e.getMessage();
+            } catch (SecurityException e) {
+                result = "Доступ до підписки втрачено. Повторно підключіть ChatGPT у KGPT.";
             } catch (Exception e) {
-                result = "Unable to fetch the account's models. Check plan access or connection.";
+                result = "Не вдалося отримати моделі (" + e.getClass().getSimpleName()
+                        + "). Перевірте підключення і спробуйте ще раз.";
             }
             String message = result;
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
                 models.setText(message);
-                discover.setEnabled(true);
+                try { discover.setEnabled(auth.canUsePlan()); }
+                catch (Exception e) { discover.setEnabled(false); }
             });
         }, "KGPT-ChatGPT-Models").start();
     }
