@@ -11,6 +11,25 @@ import java.nio.charset.StandardCharsets;
 public final class ChatGptPlanSecurity {
     private ChatGptPlanSecurity() { }
 
+    /**
+     * An HTTP request-target is only a path/query, not an absolute URL.
+     * Rebuild the callback with the port of the listener that received it.
+     * Otherwise verifyCallback rejects every automatic redirect.
+     */
+    public static String reconstructLoopbackCallback(int listenerPort, String requestTarget) {
+        if (listenerPort < 1 || listenerPort > 65535
+                || requestTarget == null
+                || !requestTarget.startsWith("/")
+                || requestTarget.startsWith("//")
+                || requestTarget.indexOf('#') >= 0
+                || requestTarget.indexOf(' ') >= 0
+                || requestTarget.indexOf('\r') >= 0
+                || requestTarget.indexOf('\n') >= 0) {
+            throw new SecurityException("Invalid loopback request target");
+        }
+        return "http://127.0.0.1:" + listenerPort + requestTarget;
+    }
+
     public static void verifyCallback(String callback, String expected, String state) {
         final URI actual;
         final URI target;
