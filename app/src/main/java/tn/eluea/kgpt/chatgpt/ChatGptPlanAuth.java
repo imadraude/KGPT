@@ -34,6 +34,7 @@ import javax.crypto.spec.GCMParameterSpec;
 public final class ChatGptPlanAuth {
     private static final String TAG = "KGPT-Auth";
     private static final Object LOCK = new Object();
+    private static final Object REFRESH_LOCK = new Object();
     private static final SecureRandom RNG = new SecureRandom();
     private static final String AUTHORIZE = "https://auth.openai.com/api/accounts/authorize";
     private static final String TOKEN = "https://auth.openai.com/api/accounts/oauth/token";
@@ -379,49 +380,68 @@ public final class ChatGptPlanAuth {
     }
 
     public String validAccessToken() throws Exception {
-        synchronized (LOCK) {
-            JSONObject saved = load();
-            if (saved == null || !hasScope(saved.optString("scope")) ||
-                    saved.optString("access_token", "").isEmpty()) {
-                throw new SecurityException("Connect ChatGPT and approve plan access in KGPT.");
-            }
-            if (System.currentTimeMillis() + 120000L < saved.optLong("expires_at")) {
-                return saved.getString("access_token");
-            }
-            if (saved.optString("refresh_token", "").isEmpty()) {
-                throw new SecurityException("ChatGPT session expired; sign in again.");
+        // A separate mutex serializes refreshes. The main thread may still read
+        // connection status while an HTTP refresh is waiting on the network.
+        synchronized (REFRESH_LOCK) {
+            final JSONObject saved;
+            synchronized (LOCK) {
+                saved = load();
+                if (saved == null || !hasScope(saved.optString("scope")) ||
+                        saved.optString("access_token", "").isEmpty()) {
+                    throw new SecurityException("Connect ChatGPT and approve plan access in KGPT.");
+                }
+                if (System.currentTimeMillis() + 120000L < saved.optLong("expires_at")) {
+                    return saved.getString("access_token");
+                }
+                if (saved.optString("refresh_token", "").isEmpty()) {
+                    throw new SecurityException("ChatGPT session expired; sign in again.");
+                }
             }
             JSONObject tokens;
             try {
-                // Serialize refreshes: both access and rotating refresh tokens
-                // must be persisted together before another request starts.
                 tokens = postForm(TOKEN, "grant_type", "refresh_token",
                         "client_id", saved.getString("client_id"),
                         "refresh_token", saved.getString("refresh_token"),
                         "resource", RESOURCE);
             } catch (OAuthTokenException e) {
                 if (isTerminalRefreshCode(e.code)) {
-                    JSONObject cleared = new JSONObject();
-                    for (String key : new String[]{"host_id", "client_id", "subject", "email"}) {
-                        if (saved.has(key)) cleared.put(key, saved.get(key));
+                    synchronized (LOCK) {
+                        JSONObject current = load();
+                        // Never erase a newly signed-in account or newer tokens.
+                        if (current != null && saved.getString("refresh_token")
+                                .equals(current.optString("refresh_token"))) {
+                            JSONObject cleared = new JSONObject();
+                            for (String key : new String[]{"host_id", "client_id", "subject", "email"}) {
+                                if (saved.has(key)) cleared.put(key, saved.get(key));
+                            }
+                            save(cleared);
+                        }
                     }
-                    save(cleared);
                     throw new SecurityException("ChatGPT session expired or revoked. Sign in again.");
                 }
-                throw e; // Keep renewable credentials on transient errors.
+                throw e; // Preserve credentials for retry after transient HTTP errors.
             }
-            JSONObject updated = new JSONObject(saved.toString());
-            updated.put("access_token", tokens.getString("access_token"));
-            updated.put("refresh_token", tokens.getString("refresh_token"));
-            if (tokens.has("scope")) updated.put("scope", tokens.getString("scope"));
-            long expiresIn = tokens.optLong("expires_in", 0);
-            if (expiresIn <= 0) throw new IOException("OAuth refresh returned no expiry.");
-            updated.put("expires_at", System.currentTimeMillis() + expiresIn * 1000L);
-            if (!hasScope(updated.optString("scope"))) {
-                throw new SecurityException("ChatGPT plan access was revoked.");
+            synchronized (LOCK) {
+                JSONObject current = load();
+                if (current == null || !saved.getString("refresh_token")
+                        .equals(current.optString("refresh_token"))) {
+                    // User signed out or authorized another account during HTTP refresh.
+                    // Do not write back the old account's credentials.
+                    throw new SecurityException("ChatGPT account changed. Reconnect if needed.");
+                }
+                JSONObject updated = new JSONObject(saved.toString());
+                updated.put("access_token", tokens.getString("access_token"));
+                updated.put("refresh_token", tokens.getString("refresh_token"));
+                if (tokens.has("scope")) updated.put("scope", tokens.getString("scope"));
+                long expiresIn = tokens.optLong("expires_in", 0);
+                if (expiresIn <= 0) throw new IOException("OAuth refresh returned no expiry.");
+                updated.put("expires_at", System.currentTimeMillis() + expiresIn * 1000L);
+                if (!hasScope(updated.optString("scope"))) {
+                    throw new SecurityException("ChatGPT plan access was revoked.");
+                }
+                save(updated); // Atomic access + rotating refresh token replacement.
+                return updated.getString("access_token");
             }
-            save(updated);
-            return updated.getString("access_token");
         }
     }
 
@@ -431,13 +451,12 @@ public final class ChatGptPlanAuth {
             if (saved == null || !hasScope(saved.optString("scope"))) {
                 throw new SecurityException("Reconnect ChatGPT in KGPT settings.");
             }
-            if (!rejectedAccessToken.equals(saved.optString("access_token"))) {
-                return validAccessToken(); // Another request already rotated the token.
+            if (rejectedAccessToken.equals(saved.optString("access_token"))) {
+                saved.put("expires_at", 0);
+                save(saved);
             }
-            saved.put("expires_at", 0);
-            save(saved);
-            return validAccessToken();
         }
+        return validAccessToken();
     }
 
     private static boolean isTerminalRefreshCode(String code) {
