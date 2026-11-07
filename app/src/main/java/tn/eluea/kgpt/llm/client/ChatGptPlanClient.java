@@ -79,6 +79,12 @@ public final class ChatGptPlanClient extends LanguageModelClient {
                         subscriber.onError(new IllegalStateException("KGPT ChatGPT service disconnected"));
                     }
                 }
+                @Override public void onBindingDied(ComponentName name) {
+                    onServiceDisconnected(name);
+                }
+                @Override public void onNullBinding(ComponentName name) {
+                    onServiceDisconnected(name);
+                }
             };
             timer[0] = () -> {
                 if (done.compareAndSet(false, true)) {
@@ -86,7 +92,7 @@ public final class ChatGptPlanClient extends LanguageModelClient {
                     subscriber.onError(new IllegalStateException("ChatGPT request timed out"));
                 }
             };
-            ui.postDelayed(timer[0], 135000);
+            ui.postDelayed(timer[0], 185000); // refresh (up to 45s) + inference (up to 115s) + IPC
             Intent intent = new Intent().setClassName("tn.eluea.kgpt",
                     "tn.eluea.kgpt.chatgpt.ChatGptPlanService");
             try {
