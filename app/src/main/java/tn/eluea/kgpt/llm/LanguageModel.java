@@ -14,6 +14,7 @@ public enum LanguageModel {
         Gemini("Gemini", "gemini-3.7-flash", "https://generativelanguage.googleapis.com/v1beta", true,
                         "https://aistudio.google.com/app/apikey"),
         ChatGPT("ChatGPT", "gpt-5", "https://api.openai.com/v1", false, "https://platform.openai.com/api-keys"),
+        ChatGPTPlan("ChatGPT Plan", "gpt-6.1-sol", "https://api.openai.com/v1", false, "https://chatgpt.com"),
         Groq("Groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", true,
                         "https://console.groq.com/keys"),
         OpenRouter("OpenRouter", "openrouter/free", "https://openrouter.ai/api/v1", true,
