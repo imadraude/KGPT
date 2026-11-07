@@ -241,7 +241,7 @@ public class ApiKeysFragment extends Fragment implements AdditionalApiKeysAdapte
 
         if (SPManager.isReady()) {
             for (LanguageModel model : LanguageModel.values()) {
-                if (model != LanguageModel.Gemini) {
+                if (model != LanguageModel.Gemini && model != LanguageModel.ChatGPTPlan) {
                     String key = SPManager.getInstance().getApiKey(model);
                     if (key != null && !key.isEmpty()) {
                         additionalModels.add(model);
@@ -260,7 +260,7 @@ public class ApiKeysFragment extends Fragment implements AdditionalApiKeysAdapte
         // Get available models
         List<LanguageModel> availableModels = new ArrayList<>();
         for (LanguageModel model : LanguageModel.values()) {
-            if (model != LanguageModel.Gemini && !additionalModels.contains(model)) {
+            if (model != LanguageModel.Gemini && model != LanguageModel.ChatGPTPlan && !additionalModels.contains(model)) {
                 availableModels.add(model);
             }
         }
