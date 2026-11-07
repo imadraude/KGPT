@@ -43,6 +43,8 @@ public final class ChatGptPlanAuth {
     private static final String SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
     private static final String KEY = "kgpt_chatgpt_plan_aes_v1";
     private static final String FILE = "chatgpt_plan_v1.bin";
+    private static final String PENDING_FILE = "chatgpt_plan_pending_v1.bin";
+    private static final long PENDING_TTL_MS = 600_000L;
     private final Context context;
 
     private static volatile PendingSession pendingSession;
@@ -57,11 +59,19 @@ public final class ChatGptPlanAuth {
         final String nonce;
         final String verifier;
         final ServerSocket server;
+        final long createdAt;
         final AtomicBoolean processing = new AtomicBoolean(false);
         final AtomicBoolean reported = new AtomicBoolean(false);
 
         PendingSession(String client, String expectedSubject, String redirectUri,
                        String state, String nonce, String verifier, ServerSocket server) {
+            this(client, expectedSubject, redirectUri, state, nonce, verifier, server,
+                    System.currentTimeMillis());
+        }
+
+        PendingSession(String client, String expectedSubject, String redirectUri,
+                       String state, String nonce, String verifier, ServerSocket server,
+                       long createdAt) {
             this.client = client;
             this.expectedSubject = expectedSubject;
             this.redirectUri = redirectUri;
@@ -69,6 +79,7 @@ public final class ChatGptPlanAuth {
             this.nonce = nonce;
             this.verifier = verifier;
             this.server = server;
+            this.createdAt = createdAt;
         }
 
         void close() {
@@ -84,6 +95,13 @@ public final class ChatGptPlanAuth {
             if (load() == null) {
                 JSONObject initial = new JSONObject().put("host_id", "urn:uuid:" + UUID.randomUUID());
                 save(initial);
+            }
+            if (pendingSession == null) {
+                try {
+                    pendingSession = restorePending();
+                } catch (Exception e) {
+                    clearPendingFile(); // Corrupt/expired attempts cannot be trusted.
+                }
             }
         }
     }
@@ -106,6 +124,20 @@ public final class ChatGptPlanAuth {
 
     public boolean isSignInPending() {
         synchronized (LOCK) { return pendingSession != null; }
+    }
+
+    public boolean requiresManualRecovery() {
+        synchronized (LOCK) {
+            return pendingSession != null && pendingSession.server == null;
+        }
+    }
+
+    public void cancelSignIn() {
+        synchronized (LOCK) {
+            if (pendingSession != null) pendingSession.close();
+            pendingSession = null;
+            clearPendingFile();
+        }
     }
 
     public void signIn(Activity activity, Result result) {
@@ -182,7 +214,10 @@ public final class ChatGptPlanAuth {
             reportOnce(session, activity, result, "Помилка входу: " + safeMessage(e), false);
         } finally {
             synchronized (LOCK) {
-                if (pendingSession == session) pendingSession = null;
+                if (pendingSession == session) {
+                    pendingSession = null;
+                    clearPendingFile();
+                }
             }
         }
     }
@@ -204,6 +239,12 @@ public final class ChatGptPlanAuth {
                 client, expectedSubject, redirect, state, nonce, verifier, server);
         synchronized (LOCK) {
             if (pendingSession != null) pendingSession.close();
+            try {
+                savePending(session);
+            } catch (Exception e) {
+                session.close();
+                throw e;
+            }
             pendingSession = session;
         }
 
@@ -253,7 +294,10 @@ public final class ChatGptPlanAuth {
         } finally {
             session.close();
             synchronized (LOCK) {
-                if (pendingSession == session && !session.processing.get()) pendingSession = null;
+                if (pendingSession == session && !session.processing.get()) {
+                    pendingSession = null;
+                    clearPendingFile();
+                }
             }
         }
     }
@@ -273,6 +317,7 @@ public final class ChatGptPlanAuth {
         // expires. Never replace an existing account's client before validating it.
         if ("dynamic_agent_client".equals(session.client)) {
             synchronized (LOCK) {
+                if (pendingSession != session) throw new SecurityException("Authorization cancelled");
                 JSONObject saved = load();
                 if (saved != null && !saved.has("access_token")) {
                     saved.put("client_id", issued);
@@ -295,6 +340,7 @@ public final class ChatGptPlanAuth {
         // Never infer permissions from the scopes we requested.
         String grantedScope = tokens.optString("scope", "");
         synchronized (LOCK) {
+            if (pendingSession != session) throw new SecurityException("Authorization cancelled");
             JSONObject saved = load();
             if (saved == null) saved = new JSONObject();
             saved.put("client_id", finalClientId);
@@ -459,6 +505,7 @@ public final class ChatGptPlanAuth {
                 pendingSession.close();
                 pendingSession = null;
             }
+            clearPendingFile();
             JSONObject saved = load();
             if (saved == null) return;
             JSONObject cleared = new JSONObject().put("host_id", saved.getString("host_id"));
@@ -600,8 +647,44 @@ public final class ChatGptPlanAuth {
         return generator.generateKey();
     }
 
+    private void savePending(PendingSession session) throws Exception {
+        JSONObject saved = new JSONObject()
+                .put("client", session.client)
+                .put("expected_subject", session.expectedSubject)
+                .put("redirect", session.redirectUri)
+                .put("state", session.state)
+                .put("nonce", session.nonce)
+                .put("verifier", session.verifier)
+                .put("created_at", session.createdAt);
+        saveEncryptedFile(PENDING_FILE, saved);
+    }
+
+    private PendingSession restorePending() throws Exception {
+        JSONObject saved = loadEncryptedFile(PENDING_FILE);
+        if (saved == null) return null;
+        long created = saved.optLong("created_at", 0);
+        long age = System.currentTimeMillis() - created;
+        if (created <= 0 || age < 0 || age > PENDING_TTL_MS) {
+            clearPendingFile();
+            return null;
+        }
+        return new PendingSession(saved.getString("client"),
+                saved.optString("expected_subject", ""),
+                saved.getString("redirect"), saved.getString("state"),
+                saved.getString("nonce"), saved.getString("verifier"),
+                null, created);
+    }
+
+    private void clearPendingFile() {
+        new File(context.getNoBackupFilesDir(), PENDING_FILE).delete();
+    }
+
     private JSONObject load() throws Exception {
-        File path = new File(context.getNoBackupFilesDir(), FILE);
+        return loadEncryptedFile(FILE);
+    }
+
+    private JSONObject loadEncryptedFile(String fileName) throws Exception {
+        File path = new File(context.getNoBackupFilesDir(), fileName);
         if (!path.exists()) return null;
         byte[] raw;
         try (FileInputStream input = new FileInputStream(path);
@@ -621,12 +704,16 @@ public final class ChatGptPlanAuth {
     }
 
     private void save(JSONObject value) throws Exception {
+        saveEncryptedFile(FILE, value);
+    }
+
+    private void saveEncryptedFile(String fileName, JSONObject value) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, secret());
         byte[] encrypted = cipher.doFinal(value.toString().getBytes(StandardCharsets.UTF_8));
         File dir = context.getNoBackupFilesDir();
-        File temp = new File(dir, FILE + ".tmp");
-        File target = new File(dir, FILE);
+        File temp = new File(dir, fileName + ".tmp");
+        File target = new File(dir, fileName);
         try (FileOutputStream output = new FileOutputStream(temp)) {
             output.write(cipher.getIV()); output.write(encrypted);
             output.getFD().sync();
