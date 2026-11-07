@@ -134,7 +134,10 @@ public final class ChatGptPlanAuth {
 
     public void cancelSignIn() {
         synchronized (LOCK) {
-            if (pendingSession != null) pendingSession.close();
+            if (pendingSession != null) {
+                pendingSession.reported.set(true);
+                pendingSession.close();
+            }
             pendingSession = null;
             clearPendingFile();
         }
@@ -238,7 +241,10 @@ public final class ChatGptPlanAuth {
         PendingSession session = new PendingSession(
                 client, expectedSubject, redirect, state, nonce, verifier, server);
         synchronized (LOCK) {
-            if (pendingSession != null) pendingSession.close();
+            if (pendingSession != null) {
+                pendingSession.reported.set(true);
+                pendingSession.close();
+            }
             try {
                 savePending(session);
             } catch (Exception e) {
