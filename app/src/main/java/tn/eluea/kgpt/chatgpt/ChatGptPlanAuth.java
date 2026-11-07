@@ -508,6 +508,7 @@ public final class ChatGptPlanAuth {
     public void disconnectLocally() throws Exception {
         synchronized (LOCK) {
             if (pendingSession != null) {
+                pendingSession.reported.set(true);
                 pendingSession.close();
                 pendingSession = null;
             }
@@ -525,7 +526,7 @@ public final class ChatGptPlanAuth {
     }
 
     private static String safeMessage(Exception e) {
-        if (e instanceof java.net.SocketTimeoutException) return "Browser sign-in timed out (180s)";
+        if (e instanceof java.net.SocketTimeoutException) return "Перевищено час очікування відповіді мережі.";
         if (e.getMessage() != null && !e.getMessage().isEmpty()) return e.getMessage();
         return e.getClass().getSimpleName();
     }
