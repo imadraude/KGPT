@@ -20,12 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      KGPT_KEYSTORE_B64: ${{ secrets.KGPT_KEYSTORE_B64 ]]
-      KGPT_STORE_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD ]]
+      KGPT_KEYSTORE_B64: ${{ secrets.KGPT_KEYSTORE_B64 }}
+      KGPT_STORE_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD }}
       KGPT_KEY_ALIAS: kgpt
-      KGPT_KEY_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD ]]
+      KGPT_KEY_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD }}
       KGPT_STORE_FILE: keystore/kgpt_release.jks
-      GH_TOKEN: ${{ github.token ]]
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out exact version
         uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$KGPT_KEYSTORE_B64" || -z "$KGPT_STORE_PASSWORD" ]]; then
+          if [[ -z "$KGPT_KEYSTORE_B64" || -z "$KGPT_STORE_PASSWORD" }}; then
             echo "::error::Add KGPT_KEYSTORE_B64 and KGPT_STORE_PASSWORD in repository Actions secrets before releasing."
             exit 1
           fi
@@ -87,9 +87,10 @@ jobs:
         run: |
           set -euo pipefail
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
-          if [[ -z "$APK" || ! -s "$APK" ]]; then echo "::error::Release APK not found"; exit 1; fi
+          if [[ -z "$APK" || ! -s "$APK" }}; then echo "::error::Release APK not found"; exit 1; fi
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/signing-info.txt
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | head -n 1 | grep -E "name='tn.eluea.kgpt' versionCode='${KGPT_VERSION_CODE}'"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" > /tmp/apk-badging.txt
+          grep -E "name='tn.eluea.kgpt' versionCode='${KGPT_VERSION_CODE}'" /tmp/apk-badging.txt
           sha256sum "$APK" > "$APK.sha256"
           echo "APK_PATH=$APK" >> "$GITHUB_ENV"
           echo "APK signing verified; generated checksum."
