@@ -97,6 +97,12 @@ jobs:
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
           if [[ -z "$APK" || ! -s "$APK" }}; then echo "::error::Release APK not found"; exit 1; fi
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/signing-info.txt
+          expected_cert="f3b2d84e18453838b199d6dfc8623599f51e2cca54220f3070e010783f4f0c00"
+          actual_cert="$(grep -m 1 'certificate SHA-256 digest:' /tmp/signing-info.txt | sed -E 's/^.*digest: //' | tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          if [[ "$actual_cert" != "$expected_cert" ]]; then
+            echo "::error::Signing certificate changed: installed users would not be able to update!"
+            exit 1
+          fi
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" > /tmp/apk-badging.txt
           grep -E "name='tn.eluea.kgpt' versionCode='${KGPT_VERSION_CODE}'" /tmp/apk-badging.txt
           sha256sum "$APK" > "$APK.sha256"
