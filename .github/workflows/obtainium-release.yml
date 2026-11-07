@@ -1,10 +1,11 @@
-name: KGPT Obtainium signed prerelease
+name: KGPT Obtainium signed releases
 
 # Only trusted branch pushes receive signing secrets; never sign pull-request code.
 on:
   push:
     branches:
       - feature/chatgpt-plan-oauth
+      - main
   workflow_dispatch:
 
 permissions:
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   signed-prerelease:
-    if: github.repository == 'imadraude/KGPT' && github.ref == 'refs/heads/feature/chatgpt-plan-oauth'
+    if: github.repository == 'imadraude/KGPT' && (github.ref == 'refs/heads/feature/chatgpt-plan-oauth' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -51,8 +52,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          code=$((500000 + GITHUB_RUN_NUMBER))
-          tag="v4.1.5-rc.${GITHUB_RUN_NUMBER}"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            code=$((600000 + GITHUB_RUN_NUMBER))
+            tag="v4.2.${GITHUB_RUN_NUMBER}"
+            echo "KGPT_CHANNEL=stable" >> "$GITHUB_ENV"
+          else
+            code=$((500000 + GITHUB_RUN_NUMBER))
+            tag="v4.2.0-rc.${GITHUB_RUN_NUMBER}"
+            echo "KGPT_CHANNEL=preview" >> "$GITHUB_ENV"
+          fi
           echo "KGPT_VERSION_CODE=$code" >> "$GITHUB_ENV"
           echo "KGPT_VERSION_NAME=${tag#v}" >> "$GITHUB_ENV"
           echo "KGPT_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
@@ -109,13 +117,15 @@ jobs:
           SHA256: ${SHA256}
           Signing certificate SHA-256: ${CERT_SHA256}
 
-          This is a signed prerelease. Obtainium: enable Include prereleases for https://github.com/imadraude/KGPT.
+          Signed KGPT build. Channel: ${KGPT_CHANNEL}. Obtainium: https://github.com/imadraude/KGPT; enable Include prereleases for preview builds.
           Do not overwrite an APK signed by a different publisher without backing up and reinstalling.
           NOTES
           if gh release view "$KGPT_RELEASE_TAG" > /dev/null 2>&1; then
             gh release upload "$KGPT_RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" --clobber
           else
+            extras=()
+            if [[ "$KGPT_CHANNEL" == "preview" ]]; then extras+=(--prerelease); fi
             gh release create "$KGPT_RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" \
               --title "KGPT ${KGPT_VERSION_NAME} (Obtainium)" \
-              --target "$GITHUB_SHA" --prerelease --notes-file /tmp/release-notes.txt
+              --target "$GITHUB_SHA" "${extras[@]}" --notes-file /tmp/release-notes.txt
           fi
