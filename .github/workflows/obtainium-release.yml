@@ -1,0 +1,120 @@
+name: KGPT Obtainium signed prerelease
+
+# Only trusted branch pushes receive signing secrets; never sign pull-request code.
+on:
+  push:
+    branches:
+      - feature/chatgpt-plan-oauth
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: obtainium-release
+  cancel-in-progress: false
+
+jobs:
+  signed-prerelease:
+    if: github.repository == 'imadraude/KGPT' && github.ref == 'refs/heads/feature/chatgpt-plan-oauth'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KGPT_KEYSTORE_B64: ${{ secrets.KGPT_KEYSTORE_B64 ]]
+      KGPT_STORE_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD ]]
+      KGPT_KEY_ALIAS: kgpt
+      KGPT_KEY_PASSWORD: ${{ secrets.KGPT_STORE_PASSWORD ]]
+      KGPT_STORE_FILE: keystore/kgpt_release.jks
+      GH_TOKEN: ${{ github.token ]]
+    steps:
+      - name: Check out exact version
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require permanent signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KGPT_KEYSTORE_B64" || -z "$KGPT_STORE_PASSWORD" ]]; then
+            echo "::error::Add KGPT_KEYSTORE_B64 and KGPT_STORE_PASSWORD in repository Actions secrets before releasing."
+            exit 1
+          fi
+          mkdir -p app/keystore
+          printf '%s' "$KGPT_KEYSTORE_B64" | base64 --decode > app/keystore/kgpt_release.jks
+          chmod 600 app/keystore/kgpt_release.jks
+          # Check keystore and expected alias before building; never print credentials.
+          keytool -list -keystore app/keystore/kgpt_release.jks -storepass "$KGPT_STORE_PASSWORD" -alias "$KGPT_KEY_ALIAS" > /dev/null
+          echo "Signing key loaded."
+
+      - name: Use monotonically increasing version
+        shell: bash
+        run: |
+          set -euo pipefail
+          code=$((500000 + GITHUB_RUN_NUMBER))
+          tag="v4.1.5-rc.${GITHUB_RUN_NUMBER}"
+          echo "KGPT_VERSION_CODE=$code" >> "$GITHUB_ENV"
+          echo "KGPT_VERSION_NAME=${tag#v}" >> "$GITHUB_ENV"
+          echo "KGPT_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble signed non-debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Verify package, signing and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          if [[ -z "$APK" || ! -s "$APK" ]]; then echo "::error::Release APK not found"; exit 1; fi
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" > /tmp/signing-info.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | head -n 1 | grep -E "name='tn.eluea.kgpt' versionCode='${KGPT_VERSION_CODE}'"
+          sha256sum "$APK" > "$APK.sha256"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "APK signing verified; generated checksum."
+
+      - name: Publish GitHub prerelease with APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA256="$(cut -d' ' -f1 "$APK_PATH.sha256")"
+          CERT_SHA256="$(grep -m 1 'certificate SHA-256 digest:' /tmp/signing-info.txt | sed -E 's/^.*digest: //')"
+          cat > /tmp/release-notes.txt <<NOTES
+          Experimental KGPT build for SwiftKey with ChatGPT Plan support.
+          Revision: ${GITHUB_SHA}
+          Android package: tn.eluea.kgpt
+          Version code: ${KGPT_VERSION_CODE}
+          SHA256: ${SHA256}
+          Signing certificate SHA-256: ${CERT_SHA256}
+
+          This is a signed prerelease. Obtainium: enable Include prereleases for https://github.com/imadraude/KGPT.
+          Do not overwrite an APK signed by a different publisher without backing up and reinstalling.
+          NOTES
+          if gh release view "$KGPT_RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$KGPT_RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" --clobber
+          else
+            gh release create "$KGPT_RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" \
+              --title "KGPT ${KGPT_VERSION_NAME} (Obtainium)" \
+              --target "$GITHUB_SHA" --prerelease --notes-file /tmp/release-notes.txt
+          fi
