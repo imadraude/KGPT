@@ -134,6 +134,10 @@ public final class ChatGptPlanAuth {
             try {
                 String input = rawInput != null ? rawInput.trim() : "";
                 if (input.isEmpty()) throw new IllegalArgumentException("Вставте посилання або код авторизації.");
+                if ("dynamic_agent_client".equals(session.client) && !input.contains("client_id=")) {
+                    throw new IllegalArgumentException(
+                            "Для першого входу потрібно повне посилання з code, state та client_id.");
+                }
                 Uri callback;
                 if (input.startsWith("http://") || input.startsWith("https://")) {
                     callback = Uri.parse(input);
@@ -219,6 +223,11 @@ public final class ChatGptPlanAuth {
                 builder.appendQueryParameter("agent_name_hint", "KGPT");
             } else if (previous.has("id_token")) {
                 builder.appendQueryParameter("id_token_hint", previous.getString("id_token"));
+                if (!hasScope(previous.optString("scope", ""))) {
+                    // The user explicitly returned to enable a previously denied
+                    // plan grant; a normal silent re-sign-in cannot upgrade scopes.
+                    builder.appendQueryParameter("prompt", "consent");
+                }
             }
             Intent intent = new Intent(Intent.ACTION_VIEW, builder.build());
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
@@ -510,6 +519,7 @@ public final class ChatGptPlanAuth {
                     JSONObject err = new JSONObject(raw);
                     code = err.optString("error", code);
                 } catch (Exception ignored) { }
+                if (!code.matches("[a-zA-Z0-9_.-]{1,64}")) code = "http_" + status;
                 throw new OAuthTokenException(code);
             }
             return new JSONObject(raw);
