@@ -108,6 +108,8 @@ public class GenerativeAIController implements ConfigChangeListener {
     }
 
     public boolean needApiKey() {
+        if (mModelClient == null) return true;
+        if (mModelClient.getLanguageModel() == LanguageModel.ChatGPTPlan) return false;
         return mModelClient.getApiKey() == null || mModelClient.getApiKey().isEmpty();
     }
 
