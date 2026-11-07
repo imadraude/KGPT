@@ -103,43 +103,28 @@ public final class ChatGptPlanActivity extends Activity {
 
     private void loadModels() {
         discover.setEnabled(false);
-        models.setText("Loading account model list...");
+        models.setText("Loading models available to your ChatGPT account...");
         new Thread(() -> {
             String result;
-            HttpURLConnection con = null;
             try {
-                String token = auth.validAccessToken();
-                con = (HttpURLConnection) new URL("https://api.openai.com/v1/models").openConnection();
-                con.setConnectTimeout(20000); con.setReadTimeout(30000);
-                con.setRequestProperty("Authorization", "Bearer " + token);
-                if (con.getResponseCode() != 200) throw new IllegalStateException("Models unavailable");
-                StringBuilder json = new StringBuilder();
-                try (BufferedReader br = new BufferedReader(
-                        new InputStreamReader(con.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        if (json.length() + line.length() > 200000) throw new IllegalStateException("Model list too long");
-                        json.append(line);
-                    }
+                java.util.LinkedHashMap<String, String> available =
+                        ChatGptPlanModels.fetch(auth);
+                StringBuilder list = new StringBuilder("Available models (select in KGPT > Models):\n");
+                for (java.util.Map.Entry<String, String> m : available.entrySet()) {
+                    if (list.length() > 5000) break;
+                    list.append(m.getValue()).append(" — ")
+                            .append(m.getKey()).append('\n');
                 }
-                JSONArray items = new JSONObject(json.toString()).getJSONArray("models");
-                StringBuilder labels = new StringBuilder("Available models (use a slug in KGPT > Models):\n");
-                for (int i = 0; i < items.length() && labels.length() < 3500; i++) {
-                    JSONObject m = items.getJSONObject(i);
-                    if ("list".equals(m.optString("visibility"))) {
-                        labels.append(m.optString("display_name", m.optString("slug")))
-                                .append(" — ").append(m.optString("slug")).append('\n');
-                    }
-                }
-                result = labels.toString();
+                result = list.toString();
             } catch (Exception e) {
-                result = "Could not retrieve available models. Check sign-in and plan permissions.";
-            } finally { if (con != null) con.disconnect(); }
-            String finalResult = result;
+                result = "Unable to fetch the account's models. Check plan access or connection.";
+            }
+            String message = result;
             runOnUiThread(() -> {
-                models.setText(finalResult);
+                models.setText(message);
                 discover.setEnabled(true);
             });
         }, "KGPT-ChatGPT-Models").start();
     }
+
 }
