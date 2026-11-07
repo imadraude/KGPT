@@ -90,7 +90,9 @@ public final class ChatGptPlanAuth {
     public boolean canUsePlan() throws Exception {
         synchronized (LOCK) {
             JSONObject j = load();
-            return j != null && j.has("access_token") && hasScope(j.optString("scope"));
+            return j != null && !j.optString("access_token", "").isEmpty()
+                    && !j.optString("refresh_token", "").isEmpty()
+                    && hasScope(j.optString("scope"));
         }
     }
 
@@ -380,24 +382,75 @@ public final class ChatGptPlanAuth {
         synchronized (LOCK) {
             JSONObject saved = load();
             if (saved == null || !hasScope(saved.optString("scope")) ||
-                    !saved.has("access_token"))
-                throw new SecurityException("Connect ChatGPT and approve plan access in KGPT");
-            if (System.currentTimeMillis() + 120000L < saved.optLong("expires_at"))
+                    saved.optString("access_token", "").isEmpty()) {
+                throw new SecurityException("Connect ChatGPT and approve plan access in KGPT.");
+            }
+            if (System.currentTimeMillis() + 120000L < saved.optLong("expires_at")) {
                 return saved.getString("access_token");
-            if (saved.optString("refresh_token", "").isEmpty())
+            }
+            if (saved.optString("refresh_token", "").isEmpty()) {
                 throw new SecurityException("ChatGPT session expired; sign in again.");
-            JSONObject tokens = postForm(TOKEN, "grant_type", "refresh_token",
-                    "client_id", saved.getString("client_id"),
-                    "refresh_token", saved.getString("refresh_token"), "resource", RESOURCE);
+            }
+            JSONObject tokens;
+            try {
+                // Serialize refreshes: both access and rotating refresh tokens
+                // must be persisted together before another request starts.
+                tokens = postForm(TOKEN, "grant_type", "refresh_token",
+                        "client_id", saved.getString("client_id"),
+                        "refresh_token", saved.getString("refresh_token"),
+                        "resource", RESOURCE);
+            } catch (OAuthTokenException e) {
+                if (isTerminalRefreshCode(e.code)) {
+                    JSONObject cleared = new JSONObject();
+                    for (String key : new String[]{"host_id", "client_id", "subject", "email"}) {
+                        if (saved.has(key)) cleared.put(key, saved.get(key));
+                    }
+                    save(cleared);
+                    throw new SecurityException("ChatGPT session expired or revoked. Sign in again.");
+                }
+                throw e; // Keep renewable credentials on transient errors.
+            }
             JSONObject updated = new JSONObject(saved.toString());
             updated.put("access_token", tokens.getString("access_token"));
             updated.put("refresh_token", tokens.getString("refresh_token"));
             if (tokens.has("scope")) updated.put("scope", tokens.getString("scope"));
-            updated.put("expires_at", System.currentTimeMillis() + tokens.optLong("expires_in", 3600) * 1000L);
-            if (!hasScope(updated.optString("scope")))
-                throw new SecurityException("ChatGPT plan access was revoked");
-            save(updated); // rotated refresh token and access token saved together
+            long expiresIn = tokens.optLong("expires_in", 0);
+            if (expiresIn <= 0) throw new IOException("OAuth refresh returned no expiry.");
+            updated.put("expires_at", System.currentTimeMillis() + expiresIn * 1000L);
+            if (!hasScope(updated.optString("scope"))) {
+                throw new SecurityException("ChatGPT plan access was revoked.");
+            }
+            save(updated);
             return updated.getString("access_token");
+        }
+    }
+
+    public String refreshAfterUnauthorized(String rejectedAccessToken) throws Exception {
+        synchronized (LOCK) {
+            JSONObject saved = load();
+            if (saved == null || !hasScope(saved.optString("scope"))) {
+                throw new SecurityException("Reconnect ChatGPT in KGPT settings.");
+            }
+            if (!rejectedAccessToken.equals(saved.optString("access_token"))) {
+                return validAccessToken(); // Another request already rotated the token.
+            }
+            saved.put("expires_at", 0);
+            save(saved);
+            return validAccessToken();
+        }
+    }
+
+    private static boolean isTerminalRefreshCode(String code) {
+        switch (code) {
+            case "invalid_grant":
+            case "invalid_refresh_token":
+            case "refresh_token_expired":
+            case "refresh_token_invalidated":
+            case "refresh_token_reused":
+            case "token_expired":
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -436,6 +489,14 @@ public final class ChatGptPlanAuth {
         return Base64.encodeToString(value, Base64.NO_PADDING | Base64.NO_WRAP | Base64.URL_SAFE);
     }
 
+    private static final class OAuthTokenException extends IOException {
+        final String code;
+        OAuthTokenException(String code) {
+            super("OAuth request rejected (" + code + ").");
+            this.code = code;
+        }
+    }
+
     private static JSONObject postForm(String address, String... params) throws Exception {
         StringBuilder body = new StringBuilder();
         for (int i = 0; i < params.length; i += 2) {
@@ -444,29 +505,29 @@ public final class ChatGptPlanAuth {
                     .append(URLEncoder.encode(params[i + 1], "UTF-8"));
         }
         HttpURLConnection con = (HttpURLConnection) new URL(address).openConnection();
-        con.setConnectTimeout(15000); con.setReadTimeout(30000);
-        con.setRequestMethod("POST");
-        con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-        con.setDoOutput(true);
-        try (OutputStream os = con.getOutputStream()) {
-            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+        try {
+            con.setConnectTimeout(15000);
+            con.setReadTimeout(30000);
+            con.setRequestMethod("POST");
+            con.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+            con.setDoOutput(true);
+            try (OutputStream os = con.getOutputStream()) {
+                os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            int status = con.getResponseCode();
+            String raw = readLimited(status < 400 ? con.getInputStream() : con.getErrorStream(), 128000);
+            if (status >= 400) {
+                String code = "http_" + status;
+                try {
+                    JSONObject err = new JSONObject(raw);
+                    code = err.optString("error", code);
+                } catch (Exception ignored) { }
+                throw new OAuthTokenException(code);
+            }
+            return new JSONObject(raw);
+        } finally {
+            con.disconnect();
         }
-        int code = con.getResponseCode();
-        String raw = readLimited(code < 400 ? con.getInputStream() : con.getErrorStream(), 128000);
-        con.disconnect();
-        if (code >= 400) {
-            String desc = "OAuth HTTP " + code;
-            try {
-                JSONObject errObj = new JSONObject(raw);
-                if (errObj.has("error_description")) {
-                    desc = errObj.getString("error_description");
-                } else if (errObj.has("error")) {
-                    desc = errObj.getString("error");
-                }
-            } catch (Exception ignored) {}
-            throw new IllegalStateException(desc);
-        }
-        return new JSONObject(raw);
     }
 
     private static String readLimited(InputStream stream, int cap) throws IOException {
@@ -482,6 +543,7 @@ public final class ChatGptPlanAuth {
     }
 
     private static JSONObject verifyIdentity(String token, String client, String nonce) throws Exception {
+        if (token.length() > 65536) throw new SecurityException("Oversized ID token");
         String[] parts = token.split("\\.");
         if (parts.length != 3) throw new SecurityException("Malformed ID token");
         JSONObject header = new JSONObject(new String(Base64.decode(parts[0], Base64.URL_SAFE), StandardCharsets.UTF_8));
@@ -508,10 +570,13 @@ public final class ChatGptPlanAuth {
         signature.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII));
         if (!signature.verify(Base64.decode(parts[2], Base64.URL_SAFE)))
             throw new SecurityException("Invalid ID token signature");
+        long now = System.currentTimeMillis() / 1000L;
         if (!"https://auth.openai.com".equals(claims.optString("iss")) ||
                 !nonce.equals(claims.optString("nonce")) ||
                 claims.optString("sub").isEmpty() ||
-                claims.optLong("exp") <= System.currentTimeMillis() / 1000L)
+                claims.optLong("exp") <= now ||
+                claims.optLong("nbf", 0) > now + 60 ||
+                claims.optLong("iat", 0) > now + 60)
             throw new SecurityException("ID token claims invalid");
         Object audience = claims.get("aud");
         boolean correct = client.equals(audience);
