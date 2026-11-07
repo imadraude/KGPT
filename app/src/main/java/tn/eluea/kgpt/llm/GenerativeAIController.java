@@ -172,7 +172,7 @@ public class GenerativeAIController implements ConfigChangeListener {
     }
 
     public void generateResponse(String prompt, String systemMessage) {
-        tn.eluea.kgpt.util.Logger.log("Getting response for text \"" + prompt + "\"");
+        tn.eluea.kgpt.util.Logger.log("Starting AI request (content redacted)");
 
         if (prompt.isEmpty()) {
             return;
