@@ -104,6 +104,8 @@ public abstract class LanguageModelClient {
                 return new DeepSeekClient();
             case Kimi:
                 return new KimiClient();
+            case ChatGPTPlan:
+                return new ChatGptPlanClient();
             case ChatGPT:
             default:
                 return new ChatGPTClient();

@@ -36,15 +36,15 @@ import tn.eluea.kgpt.BuildConfig;
 /**
  * Checks for updates from GitHub Releases API.
  * 
- * Repository: Eluea/KGPT
- * API: https://api.github.com/repos/Eluea/KGPT/releases/latest
+ * Repository: imadraude/KGPT
+ * API: https://api.github.com/repos/imadraude/KGPT/releases/latest
  */
 public class UpdateChecker {
 
     private static final String TAG = "KGPT_UpdateChecker";
 
     // GitHub API Configuration
-    private static final String GITHUB_OWNER = "Eluea";
+    private static final String GITHUB_OWNER = "imadraude";
     private static final String GITHUB_REPO = "KGPT";
     private static final String API_URL = "https://api.github.com/repos/" + GITHUB_OWNER + "/" + GITHUB_REPO
             + "/releases/latest";

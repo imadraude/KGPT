@@ -56,6 +56,11 @@
             </intent-filter>
         </activity>
 
+        <!-- OAuth credentials and inference remain in KGPT, not SwiftKey. -->
+        <activity android:name=".chatgpt.ChatGptPlanActivity"
+            android:exported="false" android:theme="@style/Theme.KGPT" />
+        <service android:name=".chatgpt.ChatGptPlanService"
+            android:exported="true" />
         <activity android:name=".core.ui.DialogActivity"
             android:theme="@style/Theme.KGPT.Translucent"
             android:excludeFromRecents="true"

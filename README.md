@@ -27,6 +27,11 @@
   </a>
 </p>
 
+> [!NOTE]
+> **imadraude fork — Obtainium updates:** use [this fork's Releases](https://github.com/imadraude/KGPT/releases), not the upstream badge above.
+> Add `https://github.com/imadraude/KGPT` to Obtainium and enable **Include prereleases** to receive the experimental ChatGPT Plan builds.
+> The [Ukrainian setup guide](docs/OBTAINIUM_UK.md) explains the one-time signing-key setup and update-signature compatibility.
+
 ---
 
 ## <img src="https://fonts.gstatic.com/s/e/notoemoji/latest/1f425/512.gif" alt="🐣" width="35" height="35"> Introduction
