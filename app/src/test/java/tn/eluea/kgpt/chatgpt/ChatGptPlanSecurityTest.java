@@ -14,6 +14,37 @@ public class ChatGptPlanSecurityTest {
         } catch (SecurityException expected) { }
     }
 
+    @Test public void browserCallbackReconstructionPreservesListenerPort() {
+        // A browser sends only /auth/callback?... as the HTTP request-target.
+        // The automatic listener must restore the SAME port it bound to.
+        for (int port : new int[]{1455, 41015, 46309, 65535}) {
+            String expected = "http://127.0.0.1:" + port + "/auth/callback";
+            String received = ChatGptPlanSecurity.reconstructLoopbackCallback(port,
+                    "/auth/callback?code=one%2Btwo&state=" + STATE + "&client_id=oaiapp_test");
+            assertEquals(expected + "?code=one%2Btwo&state=" + STATE +
+                    "&client_id=oaiapp_test", received);
+            ChatGptPlanSecurity.verifyCallback(received, expected, STATE);
+        }
+    }
+
+    @Test public void browserCallbackReconstructionRejectsInvalidRequestTargets() {
+        for (String target : new String[]{
+                "http://example.org/auth/callback?state=" + STATE,
+                "//example.org/auth/callback?state=" + STATE,
+                "/auth/callback?state=" + STATE + "#fragment",
+                "/auth/callback?state=" + STATE + " bad"
+        }) {
+            try {
+                ChatGptPlanSecurity.reconstructLoopbackCallback(41015, target);
+                fail("Should reject malformed HTTP request-target");
+            } catch (SecurityException expected) { }
+        }
+        try {
+            ChatGptPlanSecurity.reconstructLoopbackCallback(0, "/auth/callback");
+            fail("Should reject invalid port");
+        } catch (SecurityException expected) { }
+    }
+
     @Test public void validBrowserAndManualCallbacks() {
         ChatGptPlanSecurity.verifyCallback(CALLBACK +
                 "?code=temporary%2Bcode&state=random_state-123&client_id=oaiapp_demo", CALLBACK, STATE);
