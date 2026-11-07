@@ -370,6 +370,10 @@ public class ModelsFragment extends Fragment implements ModelsAdapter.OnModelSel
 
     @Override
     public void onBuiltinModelSelected(LanguageModel model) {
+        if (model == LanguageModel.ChatGPTPlan) {
+            startActivity(new Intent(requireContext(),
+                    tn.eluea.kgpt.chatgpt.ChatGptPlanActivity.class));
+        }
         selectedModel = model;
         selectedCustomProvider = null;
         CustomProviderManager.getInstance().setSelectedProviderType(CustomProviderManager.TYPE_BUILTIN);
