@@ -82,7 +82,7 @@ public final class ChatGptPlanActivity extends Activity {
         login.setOnClickListener(v -> {
             login.setEnabled(false);
             manual.setVisibility(View.VISIBLE);
-            status.setText("Виконайте вхід у системному браузері.\n\nЯкщо браузер заблокує повернення на 127.0.0.1, вставте повне посилання з адресного рядка сюди. Можна також вставити тільки код.");
+            status.setText("Виконайте вхід у системному браузері.\n\nЯкщо браузер заблокує повернення на 127.0.0.1, вставте повне посилання з адресного рядка сюди. Під час першого входу потрібне саме повне посилання з code, state і client_id.");
             auth.signIn(this, (message, connected) -> {
                 status.setText(message);
                 login.setEnabled(!auth.isSignInPending());
@@ -98,7 +98,7 @@ public final class ChatGptPlanActivity extends Activity {
         manual.setOnClickListener(v -> {
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
             builder.setTitle("Вставити посилання або код");
-            builder.setMessage("Якщо браузер заблокував редирект, скопіюйте адресу з рядка браузера (наприклад: http://127.0.0.1:.../auth/callback?code=...) або сам код і вставте сюди:");
+            builder.setMessage("Якщо браузер заблокував повернення, вставте всю адресу (http://127.0.0.1:.../auth/callback?code=...&state=...&client_id=...). Лише для повторного входу з уже зареєстрованим клієнтом можна вставити код окремо.");
             final EditText input = new EditText(this);
             input.setHint("http://127.0.0.1:.../auth/callback?code=...");
             input.setSingleLine(false);
