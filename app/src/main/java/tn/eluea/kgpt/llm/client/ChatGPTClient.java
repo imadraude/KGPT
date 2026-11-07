@@ -49,12 +49,18 @@ public class ChatGPTClient extends LanguageModelClient {
                     .accumulate("role", "user")
                     .accumulate("content", prompt));
             JSONObject rootJson = new JSONObject();
-            rootJson.put("model", getSubModel());
+            String model = getSubModel();
+            rootJson.put("model", model);
             rootJson.put("messages", messagesJson);
             rootJson.put("stream", false);
-            rootJson.put("max_tokens", getIntField(LanguageModelField.MaxTokens));
-            rootJson.put("temperature", getDoubleField(LanguageModelField.Temperature));
-            rootJson.put("top_p", getDoubleField(LanguageModelField.TopP));
+            // max_tokens is deprecated and incompatible with modern reasoning models.
+            rootJson.put("max_completion_tokens", getIntField(LanguageModelField.MaxTokens));
+            // GPT-5 and GPT-6 reasoning models reject custom sampling parameters.
+            // Keep sampling controls for earlier non-reasoning models only.
+            if (!model.startsWith("gpt-6") && !model.startsWith("gpt-5")) {
+                rootJson.put("temperature", getDoubleField(LanguageModelField.Temperature));
+                rootJson.put("top_p", getDoubleField(LanguageModelField.TopP));
+            }
 
             InternetRequestPublisher publisher = new InternetRequestPublisher(
                     (s, reader) -> {
