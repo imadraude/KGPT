@@ -250,16 +250,7 @@ public final class ChatGptPlanAuth {
     }
 
     private void processCallback(Uri callback, PendingSession session) throws Exception {
-        Uri expected = Uri.parse(session.redirectUri);
-        if (!"http".equals(callback.getScheme()) ||
-                !"127.0.0.1".equals(callback.getHost()) ||
-                callback.getPort() != expected.getPort() ||
-                !"/auth/callback".equals(callback.getPath())) {
-            throw new SecurityException("Посилання авторизації не відповідає поточній сесії.");
-        }
-        if (!session.state.equals(callback.getQueryParameter("state"))) {
-            throw new SecurityException("Недійсний стан авторизації. Розпочніть вхід повторно.");
-        }
+        ChatGptPlanSecurity.verifyCallback(callback.toString(), session.redirectUri, session.state);
         String error = callback.getQueryParameter("error");
         if (error != null) {
             String desc = callback.getQueryParameter("error_description");
@@ -268,17 +259,7 @@ public final class ChatGptPlanAuth {
         String code = callback.getQueryParameter("code");
         if (code == null || code.isEmpty()) throw new SecurityException("Authorization code missing");
         String returned = callback.getQueryParameter("client_id");
-        final String issued;
-        if ("dynamic_agent_client".equals(session.client)) {
-            if (returned == null || !returned.matches("oaiapp_[a-zA-Z0-9_-]+")) {
-                throw new SecurityException("OpenAI не повернув ідентифікатор застосунку. Спробуйте ще раз.");
-            }
-            issued = returned;
-        } else {
-            if (returned != null && !session.client.equals(returned))
-                throw new SecurityException("OAuth client mismatch");
-            issued = session.client;
-        }
+        final String issued = ChatGptPlanSecurity.issuedClientId(session.client, returned);
         // For a new registration retain its issued client ID even if a code later
         // expires. Never replace an existing account's client before validating it.
         if ("dynamic_agent_client".equals(session.client)) {
@@ -460,17 +441,7 @@ public final class ChatGptPlanAuth {
     }
 
     private static boolean isTerminalRefreshCode(String code) {
-        switch (code) {
-            case "invalid_grant":
-            case "invalid_refresh_token":
-            case "refresh_token_expired":
-            case "refresh_token_invalidated":
-            case "refresh_token_reused":
-            case "token_expired":
-                return true;
-            default:
-                return false;
-        }
+        return ChatGptPlanSecurity.isTerminalRefreshCode(code);
     }
 
     public void disconnectLocally() throws Exception {
@@ -497,9 +468,7 @@ public final class ChatGptPlanAuth {
         return e.getClass().getSimpleName();
     }
     private static boolean hasScope(String scope) {
-        for (String s : scope.split("\\s+"))
-            if ("chatgpt.tokens.use.direct".equals(s)) return true;
-        return false;
+        return ChatGptPlanSecurity.hasScope(scope, "chatgpt.tokens.use.direct");
     }
     private static String random(int count) {
         byte[] buf = new byte[count]; RNG.nextBytes(buf); return b64(buf);
